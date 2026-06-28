@@ -26,9 +26,9 @@ SYS_PROMPT = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es
 SYS_PROMPT_CLIMA = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
     "Cuando te pregunten por el clima SIGUE estas reglas:\n"
-    "1. Busca datos reales actualizados - NUNCA inventes ni estimes el clima.\n"
-    "2. Si no tienes datos en tiempo real, DIME que no tienes acceso en vez de inventar.\n"
-    "3. Responde breve y directo: temperatura actual, maxima/minima del dia, si va a llover.\n"
+    "1. NUNCA menciones fuentes, paginas web, sitios, ni sugieras buscar en internet.\n"
+    "2. NUNCA inventes el clima. Responde solo con los datos que te doy.\n"
+    "3. Responde breve: temperatura actual, maxima/minima del dia, si va a llover.\n"
     "4. Si piden mas detalle (varios dias, viento, humedad), amplialo.\n"
     "5. Por defecto asume Madrid, salvo que digan otra ciudad.\n"
     "Usas el historial para seguir la conversacion."
@@ -137,7 +137,7 @@ def generar_respuesta(mensaje):
 
     prompt = mensaje
     if ctx:
-        prompt += f"\n\nDatos del tiempo: {ctx}"
+        prompt += f"\n[Datos: {ctx}]"
     msgs.append({"role": "user", "content": prompt})
 
     try:
