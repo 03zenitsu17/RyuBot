@@ -24,14 +24,15 @@ CHAT_ID = 8507191434
 http = httpx.Client(timeout=30, headers={"User-Agent": "Mozilla/5.0"})
 last_update = 0
 
-# --- IA via DeepSeek ---
-SYSTEM_PROMPT = "Eres RyuBot, un asistente util y conversacional. Respondes SIEMPRE en espanol, directo y natural. Usas el historial para seguir la conversacion. Si recibes datos extra, usalos para responder con datos concretos."
+# --- IA via Groq ---
+HOY = datetime.now().strftime("%d/%m/%Y")
+SYSTEM_PROMPT = f"Eres RyuBot, un asistente util y conversacional. Hoy es {HOY}. Respondes SIEMPRE en espanol, directo y natural. Usas el historial para seguir la conversacion. Si recibes datos extra, usalos para responder con datos concretos."
 
 def ia_chat(messages):
     r = http.post("https://api.groq.com/openai/v1/chat/completions", json={
         "model": "llama-3.3-70b-versatile",
         "messages": messages,
-        "max_tokens": 350,
+        "max_tokens": 500,
         "temperature": 0.7,
     }, headers={"Authorization": f"Bearer {AI_KEY}", "Content-Type": "application/json"}, timeout=30)
     return r.json()["choices"][0]["message"]["content"].strip()
@@ -61,22 +62,20 @@ def _ddg_html(query):
         if r.status_code == 200:
             snips = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', r.text, re.DOTALL)
             if snips:
-                return " | ".join(re.sub(r'<[^>]+>', '', s).strip() for s in snips[:3])
+                return " | ".join(re.sub(r'<[^>]+>', '', s).strip() for s in snips[:5])
     except: pass
     return ""
 
 def buscar_web(query):
     baja = query.lower()
     todas = []
-    r = _ddg(query)
-    if r: todas.append(f"🌐 {r}")
+    r_html = _ddg_html(query)
+    if r_html: todas.append(f"🌐 {r_html}")
     else:
-        r = _ddg_html(query)
+        r = _ddg(query)
         if r: todas.append(f"🌐 {r}")
-    r = _ddg(f"site:reddit.com {query}")
-    if r: todas.append(f"💬 {r}")
-    r = _ddg(f"site:x.com {query}")
-    if r: todas.append(f"🐦 {r}")
+    r = _ddg_html(f"{query} {HOY.replace('/', ' ')}")
+    if r: todas.append(f"📰 {r}")
     if any(w in baja for w in ["pokemon", "pokémon", "pokedex", "wikidex", "nintendo", "switch"]):
         r = _ddg(f"site:wikidex.net {query}")
         if r: todas.append(f"📗 {r}")
@@ -91,9 +90,6 @@ def buscar_web(query):
         if r: todas.append(f"🔧 {r}")
         r = _ddg(f"site:docs.python.org {query}")
         if r: todas.append(f"📚 {r}")
-    if any(w in baja for w in ["noticia", "noticias", "ultimas", "últimas", "novedades", "nuevo", "lanzamiento"]):
-        r = _ddg_html(f"{query} noticias")
-        if r: todas.append(f"📰 {r}")
     if any(w in baja for w in ["juego", "game", "gaming", "pc", "playstation", "xbox"]):
         r = _ddg(f"site:ign.com {query}")
         if r: todas.append(f"🎮 {r}")
