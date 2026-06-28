@@ -25,8 +25,8 @@ http = httpx.Client(timeout=30, headers={"User-Agent": "Mozilla/5.0"})
 last_update = 0
 
 # --- IA via Groq ---
-HOY = datetime.now().strftime("%d/%m/%Y")
-SYSTEM_PROMPT = f"Eres RyuBot, un asistente util y conversacional. Hoy es {HOY}. Respondes SIEMPRE en espanol, directo y natural. Usas el historial para seguir la conversacion. Si recibes datos extra, usalos para responder con datos concretos."
+def _hoy(): return datetime.now().strftime("%d/%m/%Y")
+SYSTEM_PROMPT = "Eres RyuBot, un asistente util y conversacional. Respondes SIEMPRE en espanol, directo y natural. Usas el historial para seguir la conversacion. Si recibes datos extra, usalos para responder con datos concretos."
 
 def ia_chat(messages):
     r = http.post("https://api.groq.com/openai/v1/chat/completions", json={
@@ -74,7 +74,7 @@ def buscar_web(query):
     else:
         r = _ddg(query)
         if r: todas.append(f"🌐 {r}")
-    r = _ddg_html(f"{query} {HOY.replace('/', ' ')}")
+    r = _ddg_html(f"{query} {_hoy().replace('/', ' ')}")
     if r: todas.append(f"📰 {r}")
     if any(w in baja for w in ["pokemon", "pokémon", "pokedex", "wikidex", "nintendo", "switch"]):
         r = _ddg(f"site:wikidex.net {query}")
@@ -213,7 +213,7 @@ def generar_respuesta(mensaje):
     info = buscar_web(consulta)
     ctx = _sintetizar(info) if info else ""
 
-    msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT + f" Hoy es {_hoy()}."}]
     for h in historial[-4:]:
         msgs.append({"role": "user", "content": h["msg"]})
         msgs.append({"role": "assistant", "content": h["resp"][:200]})
