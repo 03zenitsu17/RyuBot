@@ -1,6 +1,6 @@
-"""Bot IA (Groq Llama 3) con busqueda por temas"""
-import sys, os, time, logging, re, urllib.parse
-from datetime import datetime
+"""Bot IA (Groq Llama 3) con busqueda por temas y recordatorios IA"""
+import sys, os, time, logging, re, json, urllib.parse, threading
+from datetime import datetime, timedelta
 import httpx
 
 logging.basicConfig(
@@ -46,6 +46,27 @@ SYS_GAMING = (
     "Usas el historial para seguir la conversacion."
 )
 
+SYS_RECORDATORIO = (
+    "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
+    "Cuando te pidan crear un recordatorio, alarma o notificacion, responde SOLO con JSON valido, sin texto adicional. "
+    "Hoy es {hoy}. Calcula fechas relativas (manana, viernes, en 3 dias) basandote en esto.\n"
+    "Si la fecha/hora es ambigua, usa accion 'pedir_aclaracion'.\n\n"
+    "Formato:\n"
+    '{{\n'
+    '  "accion": "crear_recordatorio",\n'
+    '  "titulo": "string breve",\n'
+    '  "fecha": "YYYY-MM-DD",\n'
+    '  "hora": "HH:MM",\n'
+    '  "repetir": "ninguno | diario | semanal | mensual | anual",\n'
+    '  "categoria": "personal | ryu_store | gaming | administrativo | salud",\n'
+    '  "prioridad": "normal | alta",\n'
+    '  "aviso_previo": minutos\n'
+    '}}\n\n'
+    "Para listar: accion 'listar_recordatorios'. Para borrar: accion 'borrar_recordatorio' con campo 'id' o 'titulo'.\n"
+    "Para pedir aclaracion: accion 'pedir_aclaracion' con campo 'pregunta'.\n"
+    "Si no es un recordatorio, responde de forma natural y conversacional."
+)
+
 def ia_chat(messages):
     r = http.post("https://api.groq.com/openai/v1/chat/completions", json={
         "model": "llama-3.3-70b-versatile",
@@ -80,6 +101,87 @@ def _clima(ciudad):
     except: pass
     return ""
 
+# --- Recordatorios ---
+CAL_PATH = "recordatorios.json"
+recordatorios = []
+
+def _cargar_cal():
+    global recordatorios
+    try:
+        if os.path.exists(CAL_PATH):
+            with open(CAL_PATH, encoding="utf-8") as f: recordatorios = json.load(f)
+    except: recordatorios = []
+
+def _guardar_cal():
+    with open(CAL_PATH, "w", encoding="utf-8") as f: json.dump(recordatorios, f, ensure_ascii=False, indent=2)
+
+_cargar_cal()
+
+def _ejecutar_recordatorio_json(j, mensaje):
+    ahora = datetime.now()
+    fecha_str = j.get("fecha", ahora.strftime("%Y-%m-%d"))
+    hora_str = j.get("hora", ahora.strftime("%H:%M"))
+    try:
+        disparo = datetime.strptime(f"{fecha_str} {hora_str}", "%Y-%m-%d %H:%M")
+    except:
+        return "No entendi la fecha/hora. Usa formato YYYY-MM-DD HH:MM"
+
+    r = {
+        "id": int(time.time()),
+        "titulo": j.get("titulo", "Recordatorio"),
+        "fecha": fecha_str,
+        "hora": hora_str,
+        "dispara": disparo.isoformat(),
+        "repetir": j.get("repetir", "ninguno"),
+        "categoria": j.get("categoria", "personal"),
+        "prioridad": j.get("prioridad", "normal"),
+        "aviso_previo": j.get("aviso_previo", 0),
+        "creado": ahora.isoformat(),
+    }
+    recordatorios.append(r)
+    _guardar_cal()
+
+    falta = int((disparo - ahora).total_seconds() / 60)
+    if falta < 1:
+        return f"Recordatorio creado: {r['titulo']} (ya mismo!)"
+    elif falta < 60:
+        return f"Recordatorio creado: {r['titulo']} (en {falta} min)"
+    elif falta < 1440:
+        return f"Recordatorio creado: {r['titulo']} (en {falta//60}h{falta%60:02d}min)"
+    else:
+        return f"Recordatorio creado: {r['titulo']} ({fecha_str} a las {hora_str})"
+
+def _procesar_json_recordatorio(texto):
+    # Extraer JSON del texto (puede venir con backticks o rodeado de texto)
+    m = re.search(r'\{.*"accion".*\}', texto, re.DOTALL)
+    if not m: return None
+    try:
+        j = json.loads(m.group(0))
+    except: return None
+
+    accion = j.get("accion")
+    if accion == "crear_recordatorio":
+        return _ejecutar_recordatorio_json(j, texto)
+    elif accion == "listar_recordatorios":
+        if not recordatorios: return "No tienes recordatorios."
+        lines = ["Tus recordatorios:"]
+        for i, r in enumerate(sorted(recordatorios, key=lambda x: x["dispara"]), 1):
+            d = datetime.fromisoformat(r["dispara"])
+            lines.append(f"{i}. {r['titulo']} - {d.strftime('%d/%m %H:%M')} [{r['categoria']}]")
+        return "\n".join(lines)
+    elif accion == "borrar_recordatorio":
+        idx = j.get("id")
+        tit = j.get("titulo", "").lower()
+        for i, r in enumerate(recordatorios):
+            if (idx and r["id"] == idx) or (tit and tit in r["titulo"].lower()):
+                e = recordatorios.pop(i)
+                _guardar_cal()
+                return f"Borrado: {e['titulo']}"
+        return "No encontre ese recordatorio."
+    elif accion == "pedir_aclaracion":
+        return f"❓ {j.get('pregunta', 'Necesito mas detalles.')}"
+    return None
+
 # --- Memoria ---
 historial = []
 
@@ -92,23 +194,31 @@ PALABRAS_CLIMA = ["tiempo", "clima", "temperatura", "lluvia", "calor", "frio", "
 PALABRAS_GAMING = [
     "juego", "jugar", "videojuego", "consola", "nintendo", "playstation", "xbox", "pc gaming",
     "steam", "switch", "ps5", "ps4", "series x", "game pass",
-    "rumor", "filtracion", "filtración", "noticia gaming", "lanzamiento",
+    "rumor", "filtracion", "filtracion", "noticia gaming", "lanzamiento",
     "gta", "pokemon", "zelda", "mario", "final fantasy", "call of duty", "fortnite", "minecraft",
     "digital foundry", "ign", "eurogamer", "vgc", "resetera", "nate", "genki", "tom henderson",
     "review", "analisis", "analisis", "graficos", "graficos", "fps", "resolucion",
     "ventas", "mercado", "famitsu", "npd", "circana", "vgchartz",
     "actualizacion", "parche", "update", "nerf", "buff", "nerfeo",
     "e3", "nintendo direct", "state of play", "xbox showcase", "gamescom", "geoff keighley",
-    "metacritic", "opencritic", "nota", "puntuacion", "puntuación",
+    "metacritic", "opencritic", "nota", "puntuacion", "puntuacion",
+]
+PALABRAS_RECORDATORIO = [
+    "recordatorio", "recuerda", "recuerdame", "avisame", "avísame", "alarma",
+    "notificame", "notificacion", "notificacion", "acuerdame", "recordame",
+    "cita", "reunion", "reunion", "tarea", "pendiente", "plazo", "vencimiento",
+    "sepe", "labora", "seguridad social", "tramite", "tramite", "administrativo",
 ]
 
 def _detectar_topico(texto):
     baja = texto.lower()
+    if any(w in baja for w in PALABRAS_RECORDATORIO):
+        return "recordatorio"
     if any(w in baja for w in PALABRAS_CLIMA):
         c = re.search(r'(?:en|de|para)\s+(\w+(?:\s+\w+)?)', texto, re.I)
         return f"clima {c.group(1).strip() if c else ''}"
     if any(w in baja for w in PALABRAS_GAMING):
-        return f"gaming {baja.split()[:4]}"
+        return "gaming"
     m = re.match(r'(?:que|qué|como|cómo|cuando|cuándo|donde|dónde|por que)\s+(.+)', baja)
     if m: return " ".join(m.group(1).split()[:4])
     return " ".join(baja.split()[:4])
@@ -164,11 +274,40 @@ def _buscar_gaming(query):
     if r: return r
     return ""
 
+def _es_recordatorio(texto):
+    baja = texto.lower()
+    if any(w in baja for w in PALABRAS_RECORDATORIO):
+        return True
+    # Detectar frases como "que tenga que..." o "el viernes a las..."
+    if re.search(r'(mañana|pasado mañana|el lunes|el martes|el miercoles|el jueves|el viernes|el sabado|el domingo|el \d+|a las \d+|en \d+ (min|hora|dia|día|minuto))', baja):
+        if any(w in baja for w in ["tengo", "hay que", "que hacer", "cita", "reunion", "reunión", "plazo"]):
+            return True
+    return False
+
 def generar_respuesta(mensaje):
     hoy = datetime.now().strftime("%d/%m/%Y")
     consulta = _reformular_consulta(mensaje)
-    baja = consulta.lower()
 
+    # 1. Detectar si es recordatorio
+    if _es_recordatorio(consulta):
+        sys_p = SYS_RECORDATORIO.format(hoy=hoy)
+        msgs = [{"role": "system", "content": sys_p}]
+        for h in historial[-3:]:
+            msgs.append({"role": "user", "content": h["msg"]})
+            msgs.append({"role": "assistant", "content": h["resp"][:200]})
+        msgs.append({"role": "user", "content": mensaje})
+        try:
+            rta = ia_chat(msgs)
+            if not rta: raise ValueError("Vacia")
+            resultado = _procesar_json_recordatorio(rta)
+            if resultado:
+                recordar(mensaje, resultado, "recordatorio")
+                return resultado
+        except Exception as e:
+            log.warning(f"Recordatorio fallo: {e}")
+
+    # 2. Detectar otros temas
+    baja = consulta.lower()
     es_clima = any(w in baja for w in PALABRAS_CLIMA)
     es_gaming = any(w in baja for w in PALABRAS_GAMING)
 
@@ -204,6 +343,22 @@ def generar_respuesta(mensaje):
         rta = "Lo siento, no pude procesar eso."
         recordar(mensaje, rta)
         return rta
+
+# --- Hilo de recordatorios ---
+def _revisar_recordatorios():
+    while True:
+        try:
+            _cargar_cal()
+            ahora = datetime.now()
+            for r in [r for r in recordatorios if datetime.fromisoformat(r["dispara"]) <= ahora]:
+                msg = f"⏰ RECORDATORIO: {r['titulo']} [{r['categoria']}]"
+                http.post(f"{API}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
+                recordatorios.remove(r)
+                _guardar_cal()
+        except: pass
+        time.sleep(30)
+
+threading.Thread(target=_revisar_recordatorios, daemon=True).start()
 
 # --- Polling ---
 def poll():
