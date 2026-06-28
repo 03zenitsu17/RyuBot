@@ -1,4 +1,4 @@
-"""Bot IA (Groq Llama 3) con busqueda de clima bajo demanda"""
+"""Bot IA (Groq Llama 3) con busqueda por temas"""
 import sys, os, time, logging, re, urllib.parse
 from datetime import datetime
 import httpx
@@ -22,8 +22,9 @@ http = httpx.Client(timeout=30, headers={"User-Agent": "Mozilla/5.0"})
 last_update = 0
 
 # --- IA via Groq ---
-SYS_PROMPT = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Respondes natural y directo. Usas el historial para seguir la conversacion."
-SYS_PROMPT_CLIMA = (
+SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Respondes natural y directo. Usas el historial para seguir la conversacion."
+
+SYS_CLIMA = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
     "Cuando te pregunten por el clima SIGUE estas reglas:\n"
     "1. NUNCA menciones fuentes, paginas web, sitios, ni sugieras buscar en internet.\n"
@@ -34,14 +35,36 @@ SYS_PROMPT_CLIMA = (
     "Usas el historial para seguir la conversacion."
 )
 
+SYS_GAMING = (
+    "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
+    "Cuando te pregunten sobre juegos, consolas, rumores o noticias SIGUE estas reglas:\n"
+    "1. Busca informacion actualizada en los datos que te doy, nunca respondas solo de memoria si el tema puede haber cambiado.\n"
+    "2. Cuando te pida opinion de la comunidad, busca en los datos que te doy y resume: sentimiento general, argumentos repetidos, controversias.\n"
+    "3. Las fuentes fiables segun el tema vienen en los datos. Si una fuente es poco fiable o rumor sin confirmar, dimelo.\n"
+    "4. Da respuestas organizadas: si hay fuentes con opiniones distintas, separalas.\n"
+    "5. Por defecto se conciso, si piden analisis profundo amplia.\n"
+    "Usas el historial para seguir la conversacion."
+)
+
 def ia_chat(messages):
     r = http.post("https://api.groq.com/openai/v1/chat/completions", json={
         "model": "llama-3.3-70b-versatile",
         "messages": messages,
-        "max_tokens": 500,
+        "max_tokens": 600,
         "temperature": 0.7,
     }, headers={"Authorization": f"Bearer {AI_KEY}", "Content-Type": "application/json"}, timeout=30)
     return r.json()["choices"][0]["message"]["content"].strip()
+
+# --- Busqueda web ---
+def _ddg_html(query):
+    try:
+        r = http.get(f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}", timeout=10, follow_redirects=True)
+        if r.status_code == 200:
+            snips = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', r.text, re.DOTALL)
+            if snips:
+                return " | ".join(re.sub(r'<[^>]+>', '', s).strip() for s in snips[:5])
+    except: pass
+    return ""
 
 # --- Clima via wttr.in ---
 def _clima(ciudad):
@@ -65,11 +88,27 @@ def recordar(mensaje, respuesta, topico=None):
     while len(historial) > 12:
         historial.pop(0)
 
+PALABRAS_CLIMA = ["tiempo", "clima", "temperatura", "lluvia", "calor", "frio", "soleado", "nublado", "paraguas", "humedad", "viento"]
+PALABRAS_GAMING = [
+    "juego", "jugar", "videojuego", "consola", "nintendo", "playstation", "xbox", "pc gaming",
+    "steam", "switch", "ps5", "ps4", "series x", "game pass",
+    "rumor", "filtracion", "filtración", "noticia gaming", "lanzamiento",
+    "gta", "pokemon", "zelda", "mario", "final fantasy", "call of duty", "fortnite", "minecraft",
+    "digital foundry", "ign", "eurogamer", "vgc", "resetera", "nate", "genki", "tom henderson",
+    "review", "analisis", "analisis", "graficos", "graficos", "fps", "resolucion",
+    "ventas", "mercado", "famitsu", "npd", "circana", "vgchartz",
+    "actualizacion", "parche", "update", "nerf", "buff", "nerfeo",
+    "e3", "nintendo direct", "state of play", "xbox showcase", "gamescom", "geoff keighley",
+    "metacritic", "opencritic", "nota", "puntuacion", "puntuación",
+]
+
 def _detectar_topico(texto):
     baja = texto.lower()
-    if any(w in baja for w in ["tiempo", "clima", "temperatura", "lluvia", "calor", "frio", "soleado", "nublado", "paraguas"]):
+    if any(w in baja for w in PALABRAS_CLIMA):
         c = re.search(r'(?:en|de|para)\s+(\w+(?:\s+\w+)?)', texto, re.I)
         return f"clima {c.group(1).strip() if c else ''}"
+    if any(w in baja for w in PALABRAS_GAMING):
+        return f"gaming {baja.split()[:4]}"
     m = re.match(r'(?:que|qué|como|cómo|cuando|cuándo|donde|dónde|por que)\s+(.+)', baja)
     if m: return " ".join(m.group(1).split()[:4])
     return " ".join(baja.split()[:4])
@@ -118,18 +157,32 @@ def _extraer_ciudad(texto):
     m = re.search(r'(?:en|de|para)\s+(\w+(?:\s+\w+)?)', texto, re.I)
     return m.group(1).strip().lower() if m else ""
 
+def _buscar_gaming(query):
+    r = _ddg_html(query)
+    if r: return r
+    r = _ddg_html(f"{query} 2026")
+    if r: return r
+    return ""
+
 def generar_respuesta(mensaje):
     hoy = datetime.now().strftime("%d/%m/%Y")
     consulta = _reformular_consulta(mensaje)
     baja = consulta.lower()
-    es_clima = any(w in baja for w in ["tiempo", "clima", "temperatura", "lluvia", "calor", "frio", "soleado", "nublado", "paraguas"])
+
+    es_clima = any(w in baja for w in PALABRAS_CLIMA)
+    es_gaming = any(w in baja for w in PALABRAS_GAMING)
 
     ctx = ""
+    sys_p = SYS_BASE.format(hoy=hoy)
+
     if es_clima:
         ciudad = _extraer_ciudad(consulta) or "Madrid"
         ctx = _clima(ciudad)
+        sys_p = SYS_CLIMA.format(hoy=hoy)
+    elif es_gaming:
+        ctx = _buscar_gaming(consulta)
+        sys_p = SYS_GAMING.format(hoy=hoy)
 
-    sys_p = SYS_PROMPT_CLIMA.format(hoy=hoy) if es_clima else SYS_PROMPT.format(hoy=hoy)
     msgs = [{"role": "system", "content": sys_p}]
     for h in historial[-4:]:
         msgs.append({"role": "user", "content": h["msg"]})
@@ -137,7 +190,7 @@ def generar_respuesta(mensaje):
 
     prompt = mensaje
     if ctx:
-        prompt += f"\n[Datos: {ctx}]"
+        prompt += f"\n[Info: {ctx}]"
     msgs.append({"role": "user", "content": prompt})
 
     try:
@@ -145,7 +198,7 @@ def generar_respuesta(mensaje):
         if not rta: raise ValueError("Vacia")
         topico = _detectar_topico(consulta)
         recordar(mensaje, rta, topico)
-        return rta[:1500]
+        return rta[:2000]
     except Exception as e:
         log.warning(f"IA fallo: {e}")
         rta = "Lo siento, no pude procesar eso."
