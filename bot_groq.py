@@ -11,9 +11,12 @@ logging.basicConfig(
 log = logging.getLogger("bot")
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-AI_KEY = os.environ.get("DEEPSEEK_API_KEY")
-if not BOT_TOKEN or not AI_KEY:
-    print("ERROR: Faltan TELEGRAM_BOT_TOKEN o DEEPSEEK_API_KEY")
+AI_KEY = os.environ.get("GROQ_API_KEY")
+if not BOT_TOKEN:
+    print("ERROR: Falta TELEGRAM_BOT_TOKEN")
+    sys.exit(1)
+if not AI_KEY:
+    print("ERROR: Falta GROQ_API_KEY")
     sys.exit(1)
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -25,10 +28,10 @@ last_update = 0
 SYSTEM_PROMPT = "Eres RyuBot, un asistente util y conversacional. Respondes SIEMPRE en espanol, directo y natural. Usas el historial para seguir la conversacion. Si recibes datos extra, usalos para responder con datos concretos."
 
 def ia_chat(messages):
-    r = http.post("https://api.deepseek.com/v1/chat/completions", json={
-        "model": "deepseek-chat",
+    r = http.post("https://api.groq.com/openai/v1/chat/completions", json={
+        "model": "llama-3.3-70b-versatile",
         "messages": messages,
-        "max_tokens": 250,
+        "max_tokens": 350,
         "temperature": 0.7,
     }, headers={"Authorization": f"Bearer {AI_KEY}", "Content-Type": "application/json"}, timeout=30)
     return r.json()["choices"][0]["message"]["content"].strip()
