@@ -1,5 +1,5 @@
-"""Bot IA puro (Groq Llama 3) - solo conversacion"""
-import sys, os, time, logging, re, urllib.parse, threading
+"""Bot IA (Groq Llama 3) con busqueda de clima bajo demanda"""
+import sys, os, time, logging, re, urllib.parse
 from datetime import datetime
 import httpx
 
@@ -22,7 +22,17 @@ http = httpx.Client(timeout=30, headers={"User-Agent": "Mozilla/5.0"})
 last_update = 0
 
 # --- IA via Groq ---
-SYSTEM_PROMPT = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Respondes natural y directo. Usas el historial para seguir la conversacion."
+SYS_PROMPT = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Respondes natural y directo. Usas el historial para seguir la conversacion."
+SYS_PROMPT_CLIMA = (
+    "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
+    "Cuando te pregunten por el clima SIGUE estas reglas:\n"
+    "1. Busca datos reales actualizados - NUNCA inventes ni estimes el clima.\n"
+    "2. Si no tienes datos en tiempo real, DIME que no tienes acceso en vez de inventar.\n"
+    "3. Responde breve y directo: temperatura actual, maxima/minima del dia, si va a llover.\n"
+    "4. Si piden mas detalle (varios dias, viento, humedad), amplialo.\n"
+    "5. Por defecto asume Madrid, salvo que digan otra ciudad.\n"
+    "Usas el historial para seguir la conversacion."
+)
 
 def ia_chat(messages):
     r = http.post("https://api.groq.com/openai/v1/chat/completions", json={
@@ -32,6 +42,20 @@ def ia_chat(messages):
         "temperature": 0.7,
     }, headers={"Authorization": f"Bearer {AI_KEY}", "Content-Type": "application/json"}, timeout=30)
     return r.json()["choices"][0]["message"]["content"].strip()
+
+# --- Clima via wttr.in ---
+def _clima(ciudad):
+    try:
+        r = http.get(f"https://wttr.in/{urllib.parse.quote(ciudad)}?format=%t+%C+%h+%w", timeout=8, headers={"User-Agent": "curl/8.0"})
+        if r.status_code == 200 and r.text and not r.text.startswith("<!") and len(r.text.strip()) > 3:
+            return r.text.strip()
+    except: pass
+    try:
+        r = http.get(f"https://wttr.in/{urllib.parse.quote(ciudad)}?format=%l:+%t+%C", timeout=8, headers={"User-Agent": "curl/8.0"})
+        if r.status_code == 200 and r.text and not r.text.startswith("<!") and len(r.text.strip()) > 3:
+            return r.text.strip()
+    except: pass
+    return ""
 
 # --- Memoria ---
 historial = []
@@ -43,6 +67,9 @@ def recordar(mensaje, respuesta, topico=None):
 
 def _detectar_topico(texto):
     baja = texto.lower()
+    if any(w in baja for w in ["tiempo", "clima", "temperatura", "lluvia", "calor", "frio", "soleado", "nublado", "paraguas"]):
+        c = re.search(r'(?:en|de|para)\s+(\w+(?:\s+\w+)?)', texto, re.I)
+        return f"clima {c.group(1).strip() if c else ''}"
     m = re.match(r'(?:que|qué|como|cómo|cuando|cuándo|donde|dónde|por que)\s+(.+)', baja)
     if m: return " ".join(m.group(1).split()[:4])
     return " ".join(baja.split()[:4])
@@ -54,6 +81,15 @@ def _reformular_consulta(mensaje):
 
     if any(p in baja for p in ["ahora sobre", "ahora quiero", "cambia", "cambiar", "otra cosa", "diferente"]):
         return mensaje
+
+    if ult_top.startswith("clima"):
+        limpio = baja
+        for p in ["tiempo en", "tiempo de", "tiempo para", "clima en", "clima de"]:
+            limpio = re.sub(r'^y?\s*' + re.escape(p) + r'\s*', '', limpio).strip()
+        if limpio == baja:
+            limpio = re.sub(r'^(?:y\s+|y\s*)?(?:en|de|para|del|de la)?\s*', '', baja).strip()
+        if limpio and len(limpio.split()) <= 2 and not any(w in limpio for w in ["tiempo", "clima", "que", "como", "cuando", "donde"]):
+            return f"tiempo en {limpio}"
 
     if baja.startswith("pero "):
         return mensaje
@@ -78,15 +114,31 @@ def _topico_previo():
         if h.get("topico"): return h["topico"]
     return ""
 
+def _extraer_ciudad(texto):
+    m = re.search(r'(?:en|de|para)\s+(\w+(?:\s+\w+)?)', texto, re.I)
+    return m.group(1).strip().lower() if m else ""
+
 def generar_respuesta(mensaje):
     hoy = datetime.now().strftime("%d/%m/%Y")
     consulta = _reformular_consulta(mensaje)
+    baja = consulta.lower()
+    es_clima = any(w in baja for w in ["tiempo", "clima", "temperatura", "lluvia", "calor", "frio", "soleado", "nublado", "paraguas"])
 
-    msgs = [{"role": "system", "content": SYSTEM_PROMPT.format(hoy=hoy)}]
+    ctx = ""
+    if es_clima:
+        ciudad = _extraer_ciudad(consulta) or "Madrid"
+        ctx = _clima(ciudad)
+
+    sys_p = SYS_PROMPT_CLIMA.format(hoy=hoy) if es_clima else SYS_PROMPT.format(hoy=hoy)
+    msgs = [{"role": "system", "content": sys_p}]
     for h in historial[-4:]:
         msgs.append({"role": "user", "content": h["msg"]})
         msgs.append({"role": "assistant", "content": h["resp"][:200]})
-    msgs.append({"role": "user", "content": mensaje})
+
+    prompt = mensaje
+    if ctx:
+        prompt += f"\n\nDatos del tiempo: {ctx}"
+    msgs.append({"role": "user", "content": prompt})
 
     try:
         rta = ia_chat(msgs)
