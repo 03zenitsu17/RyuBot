@@ -442,11 +442,15 @@ def generar_respuesta(mensaje):
         # --- Cuerpo de un email ---
         if "cuerpo" in consulta or "contenido" in consulta or "lee" in consulta or "leer" in consulta:
             term = ""
-            m = re.search(r'(?:de|del)\s+(.+?)(?:\s*$)', consulta, re.I)
-            if m: term = m.group(1).strip()
+            barra = re.search(r'/(.+?)(?:\s*$)', consulta)
+            if barra:
+                term = barra.group(1).strip()
+            else:
+                m = re.search(r'(?:de|del)\s+(.+?)(?:\s*$)', consulta, re.I)
+                if m: term = m.group(1).strip()
             if term:
-                eid = _buscar_email_id(f"from:{term}")
-                if not eid: eid = _buscar_email_id(term)
+                eid = _buscar_email_id(term)
+                if not eid: eid = _buscar_email_id(f"from:{term}")
                 if eid: return _leer_cuerpo(eid)
                 return f"No encontre email de {term}."
             return _leer_inbox()
@@ -454,13 +458,15 @@ def generar_respuesta(mensaje):
         # --- Responder (borrador respuesta) ---
         if "responde" in consulta or "responder" in consulta:
             term, texto_resp = "", ""
-            m = re.search(r'(?:de|del|a)\s+(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta, re.I)
-            if m: term = m.group(1).strip()
+            barra = re.search(r'/(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta)
+            if barra: term = barra.group(1).strip()
+            if not term:
+                m = re.search(r'(?:de|del|a)\s+(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta, re.I)
+                if m: term = m.group(1).strip()
             m = re.search(r'(?:diciendo|que)\s+(.+?)(?:\s*$)', consulta, re.I)
             if m: texto_resp = m.group(1).strip()
             if term:
-                eid = _buscar_email_id(f"from:{term}")
-                if not eid: eid = _buscar_email_id(term)
+                eid = _buscar_email_id(term)
                 if eid:
                     if texto_resp: return _crear_borrador_respuesta(eid, texto_resp)
                     return f"Que texto pongo en la respuesta a {term}?"
@@ -481,17 +487,25 @@ def generar_respuesta(mensaje):
         max_r = 1 if es_ultimo else 5
         solo_no_leidos = not es_leidos
         filtro = ""
-        m = re.search(r'(?:sobre|acerca de)\s+(.+?)(?:\s*$)', consulta, re.I)
-        if m: filtro = m.group(1).strip()
-        if not filtro:
-            m = re.search(r'(?:de|del)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
-            if m:
-                t = m.group(1).strip()
-                if t.lower() in consulta.lower():
-                    filtro = f"from:{t}"
-        m = re.search(r'(?:asunto|tema)\s+(.+?)(?:\s*$)', consulta, re.I)
-        if m and not filtro:
-            filtro = f"subject:{m.group(1).strip()}"
+        # Si hay "/", todo lo que sigue es el termino de busqueda exacto
+        barra = re.search(r'/(.+?)(?:\s*$)', consulta)
+        if barra:
+            term = barra.group(1).strip()
+            filtro = term
+            solo_no_leidos = False
+            max_r = 1 if es_ultimo else 5
+        else:
+            m = re.search(r'(?:sobre|acerca de)\s+(.+?)(?:\s*$)', consulta, re.I)
+            if m: filtro = m.group(1).strip()
+            if not filtro:
+                m = re.search(r'(?:de|del)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
+                if m:
+                    t = m.group(1).strip()
+                    if t.lower() in consulta.lower():
+                        filtro = f"from:{t}"
+            m = re.search(r'(?:asunto|tema)\s+(.+?)(?:\s*$)', consulta, re.I)
+            if m and not filtro:
+                filtro = f"subject:{m.group(1).strip()}"
         return _leer_inbox(max_r=max_r, filtro=filtro, solo_no_leidos=solo_no_leidos)
 
     # 3. Clima / Gaming / Normal
