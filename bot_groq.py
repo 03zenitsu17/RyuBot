@@ -46,25 +46,26 @@ def _init_gmail():
         log.warning(f"Gmail init error: {e}")
         return None
 
-def _leer_inbox(max_r=5, filtro=""):
+def _leer_inbox(max_r=5, filtro="", solo_no_leidos=True, solo_ultimo=False):
     svc = _init_gmail()
     if not svc: return "Gmail no conectado."
     try:
-        params = {"userId": "me", "labelIds": ["INBOX", "UNREAD"], "maxResults": max_r}
-        if filtro:
-            params["q"] = filtro
+        labels = ["INBOX"]
+        if solo_no_leidos: labels.append("UNREAD")
+        params = {"userId": "me", "labelIds": labels, "maxResults": max_r}
+        if filtro: params["q"] = filtro
         r = svc.users().messages().list(**params).execute()
         msgs = r.get("messages", [])
         if not msgs:
-            if filtro: return f"No hay emails sin leer que coincidan con '{filtro}'."
-            return "No tienes emails sin leer."
+            msg = f"No hay emails que coincidan con '{filtro}'." if filtro else "No tienes emails."
+            return msg
         res = []
         for m in msgs[:max_r]:
-            d = svc.users().messages().get(userId="me", id=m["id"], format="metadata", metadataHeaders=["From", "Subject"]).execute()
+            d = svc.users().messages().get(userId="me", id=m["id"], format="metadata", metadataHeaders=["From", "Subject", "Date"]).execute()
             h = {h["name"]: h["value"] for h in d.get("payload", {}).get("headers", [])}
-            res.append(f"De: {h.get('From','?')} | Asunto: {h.get('Subject','?')}")
-        titulo = f"Emails {'con ' + filtro if filtro else 'sin leer'}:\n"
-        return titulo + "\n".join(res)
+            res.append(f"De: {h.get('From','?')} | Asunto: {h.get('Subject','?')} | {h.get('Date','?')}")
+        titulo = f"Emails {'con ' + filtro if filtro else ''}:\n"
+        return titulo + "\n".join(res[:max_r])
     except Exception as e:
         return f"Error al leer email: {e}"
 
@@ -425,6 +426,9 @@ def generar_respuesta(mensaje):
         if not GMAIL_TOKEN_B64:
             return "Gmail no configurado."
 
+        es_ultimo = "ultimo" in consulta or "último" in consulta
+        es_leidos = "leido" in consulta or "leído" in consulta or "todos" in consulta
+
         # --- Listar borradores ---
         if "lista" in consulta and "borrador" in consulta:
             return _listar_borradores()
@@ -432,44 +436,39 @@ def generar_respuesta(mensaje):
         # --- Borrar borrador ---
         if ("borra" in consulta or "elimina" in consulta) and "borrador" in consulta:
             m = re.search(r'(?:borrador|de)\s+(.+?)(?:\s*$)', consulta, re.I)
-            if m:
-                return _borrar_borrador(m.group(1).strip())
+            if m: return _borrar_borrador(m.group(1).strip())
             return "Que borrador quieres borrar?"
 
-        # --- Leer cuerpo de un email especifico ---
+        # --- Cuerpo de un email ---
         if "cuerpo" in consulta or "contenido" in consulta or "lee" in consulta or "leer" in consulta:
             term = ""
             m = re.search(r'(?:de|del)\s+(.+?)(?:\s*$)', consulta, re.I)
             if m: term = m.group(1).strip()
             if term:
                 eid = _buscar_email_id(f"from:{term}")
-                if eid: return _leer_cuerpo(eid)
-                eid = _buscar_email_id(term)
+                if not eid: eid = _buscar_email_id(term)
                 if eid: return _leer_cuerpo(eid)
                 return f"No encontre email de {term}."
             return _leer_inbox()
 
-        # --- Borrador de respuesta a un email ---
-        if "responde" in consulta or "responder" in consulta or "respondele" in consulta:
+        # --- Responder (borrador respuesta) ---
+        if "responde" in consulta or "responder" in consulta:
             term, texto_resp = "", ""
             m = re.search(r'(?:de|del|a)\s+(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta, re.I)
             if m: term = m.group(1).strip()
-            # Extraer el texto del mensaje después de "diciendo" o "que"
             m = re.search(r'(?:diciendo|que)\s+(.+?)(?:\s*$)', consulta, re.I)
             if m: texto_resp = m.group(1).strip()
             if term:
                 eid = _buscar_email_id(f"from:{term}")
                 if not eid: eid = _buscar_email_id(term)
                 if eid:
-                    if texto_resp:
-                        return _crear_borrador_respuesta(eid, texto_resp)
-                    else:
-                        return f"Que texto pongo en la respuesta a {term}?"
+                    if texto_resp: return _crear_borrador_respuesta(eid, texto_resp)
+                    return f"Que texto pongo en la respuesta a {term}?"
                 return f"No encontre email de {term}."
             return "A que email quieres responder?"
 
         # --- Borrador nuevo ---
-        if "nuevo borrador" in consulta or "nuevo email" in consulta or "borrador nuevo" in consulta:
+        if "nuevo borrador" in consulta or "nuevo email" in consulta:
             return "Dime: para quien, asunto y mensaje."
 
         # --- Importantes ---
@@ -478,7 +477,9 @@ def generar_respuesta(mensaje):
             if imp: return "Importantes:\n"+("\n".join(imp))
             return "No hay correos importantes nuevos."
 
-        # --- Leer inbox con filtro ---
+        # --- Leer inbox (con filtro) ---
+        max_r = 1 if es_ultimo else 5
+        solo_no_leidos = not es_leidos
         filtro = ""
         m = re.search(r'(?:sobre|acerca de)\s+(.+?)(?:\s*$)', consulta, re.I)
         if m: filtro = m.group(1).strip()
@@ -491,7 +492,7 @@ def generar_respuesta(mensaje):
         m = re.search(r'(?:asunto|tema)\s+(.+?)(?:\s*$)', consulta, re.I)
         if m and not filtro:
             filtro = f"subject:{m.group(1).strip()}"
-        return _leer_inbox(filtro=filtro)
+        return _leer_inbox(max_r=max_r, filtro=filtro, solo_no_leidos=solo_no_leidos)
 
     # 3. Clima / Gaming / Normal
     baja = consulta.lower()
