@@ -46,6 +46,8 @@ def _init_gmail():
         log.warning(f"Gmail init error: {e}")
         return None
 
+_ultima_lista_emails = []  # [(id, from, subject)]
+
 def _leer_inbox(max_r=5, filtro="", solo_no_leidos=True, solo_ultimo=False):
     svc = _init_gmail()
     if not svc: return "Gmail no conectado."
@@ -59,11 +61,14 @@ def _leer_inbox(max_r=5, filtro="", solo_no_leidos=True, solo_ultimo=False):
         if not msgs:
             msg = f"No hay emails que coincidan con '{filtro}'." if filtro else "No tienes emails."
             return msg
+        global _ultima_lista_emails
         res = []
-        for m in msgs[:max_r]:
+        _ultima_lista_emails = []
+        for i, m in enumerate(msgs[:max_r], 1):
             d = svc.users().messages().get(userId="me", id=m["id"], format="metadata", metadataHeaders=["From", "Subject", "Date"]).execute()
             h = {h["name"]: h["value"] for h in d.get("payload", {}).get("headers", [])}
-            res.append(f"De: {h.get('From','?')} | Asunto: {h.get('Subject','?')} | {h.get('Date','?')}")
+            _ultima_lista_emails.append((m["id"], h.get("From","?"), h.get("Subject","?")))
+            res.append(f"{i}. De: {h.get('From','?')} | Asunto: {h.get('Subject','?')} | {h.get('Date','?')}")
         titulo = f"Emails {'con ' + filtro if filtro else ''}:\n"
         return titulo + "\n".join(res[:max_r])
     except Exception as e:
@@ -155,6 +160,12 @@ def _borrar_borrador(criterio):
         return "No encontre un borrador con ese criterio."
     except Exception as e:
         return f"Error: {e}"
+
+def _email_por_numero(n):
+    global _ultima_lista_emails
+    if 1 <= n <= len(_ultima_lista_emails):
+        return _ultima_lista_emails[n-1][0]
+    return None
 
 def _buscar_email_id(termino):
     """Devuelve el ID del primer email no leido que coincida"""
@@ -441,36 +452,44 @@ def generar_respuesta(mensaje):
 
         # --- Cuerpo de un email ---
         if "cuerpo" in consulta or "contenido" in consulta or "lee" in consulta or "leer" in consulta:
-            term = ""
-            barra = re.search(r'/(.+?)(?:\s*$)', consulta)
-            if barra:
-                term = barra.group(1).strip()
-            else:
-                m = re.search(r'(?:de|del)\s+(.+?)(?:\s*$)', consulta, re.I)
-                if m: term = m.group(1).strip()
-            if term:
-                eid = _buscar_email_id(term)
-                if not eid: eid = _buscar_email_id(f"from:{term}")
-                if eid: return _leer_cuerpo(eid)
-                return f"No encontre email de {term}."
+            eid = None
+            m_num = re.search(r'(?:el|al)\s*(\d+)$', consulta)
+            if m_num:
+                eid = _email_por_numero(int(m_num.group(1)))
+            if not eid:
+                barra = re.search(r'/(.+?)(?:\s*$)', consulta)
+                if barra:
+                    term = barra.group(1).strip()
+                    eid = _buscar_email_id(term)
+                    if not eid: eid = _buscar_email_id(f"from:{term}")
+                else:
+                    m = re.search(r'(?:de|del)\s+(.+?)(?:\s*$)', consulta, re.I)
+                    if m:
+                        term = m.group(1).strip()
+                        eid = _buscar_email_id(term)
+                        if not eid: eid = _buscar_email_id(f"from:{term}")
+            if eid: return _leer_cuerpo(eid)
             return _leer_inbox()
 
         # --- Responder (borrador respuesta) ---
         if "responde" in consulta or "responder" in consulta:
-            term, texto_resp = "", ""
-            barra = re.search(r'/(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta)
-            if barra: term = barra.group(1).strip()
-            if not term:
+            eid, texto_resp = None, ""
+            m_num = re.search(r'(?:al|el)\s*(\d+)', consulta)
+            if m_num:
+                eid = _email_por_numero(int(m_num.group(1)))
+            if not eid:
+                barra = re.search(r'/(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta)
+                if barra:
+                    eid = _buscar_email_id(barra.group(1).strip())
+            if not eid:
                 m = re.search(r'(?:de|del|a)\s+(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta, re.I)
-                if m: term = m.group(1).strip()
+                if m:
+                    eid = _buscar_email_id(m.group(1).strip())
             m = re.search(r'(?:diciendo|que)\s+(.+?)(?:\s*$)', consulta, re.I)
             if m: texto_resp = m.group(1).strip()
-            if term:
-                eid = _buscar_email_id(term)
-                if eid:
-                    if texto_resp: return _crear_borrador_respuesta(eid, texto_resp)
-                    return f"Que texto pongo en la respuesta a {term}?"
-                return f"No encontre email de {term}."
+            if eid:
+                if texto_resp: return _crear_borrador_respuesta(eid, texto_resp)
+                return "Que texto pongo en la respuesta?"
             return "A que email quieres responder?"
 
         # --- Borrador nuevo ---
