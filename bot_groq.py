@@ -46,19 +46,25 @@ def _init_gmail():
         log.warning(f"Gmail init error: {e}")
         return None
 
-def _leer_inbox(max_r=5):
+def _leer_inbox(max_r=5, filtro=""):
     svc = _init_gmail()
     if not svc: return "Gmail no conectado."
     try:
-        r = svc.users().messages().list(userId="me", labelIds=["INBOX", "UNREAD"], maxResults=max_r).execute()
+        params = {"userId": "me", "labelIds": ["INBOX", "UNREAD"], "maxResults": max_r}
+        if filtro:
+            params["q"] = filtro
+        r = svc.users().messages().list(**params).execute()
         msgs = r.get("messages", [])
-        if not msgs: return "No tienes emails sin leer."
+        if not msgs:
+            if filtro: return f"No hay emails sin leer que coincidan con '{filtro}'."
+            return "No tienes emails sin leer."
         res = []
         for m in msgs[:max_r]:
             d = svc.users().messages().get(userId="me", id=m["id"], format="metadata", metadataHeaders=["From", "Subject"]).execute()
             h = {h["name"]: h["value"] for h in d.get("payload", {}).get("headers", [])}
             res.append(f"De: {h.get('From','?')} | Asunto: {h.get('Subject','?')}")
-        return "Emails sin leer:\n" + "\n".join(res)
+        titulo = f"Emails {'con ' + filtro if filtro else 'sin leer'}:\n"
+        return titulo + "\n".join(res)
     except Exception as e:
         return f"Error al leer email: {e}"
 
@@ -332,14 +338,24 @@ def generar_respuesta(mensaje):
     # 2. Gmail
     if _es_gmail(consulta):
         if not GMAIL_TOKEN_B64:
-            return "Gmail no configurado. El desarrollador debe configurar GMAIL_TOKEN_B64."
+            return "Gmail no configurado."
         if "borrador" in consulta or "prepara respuesta" in consulta or "responder" in consulta:
             return "Dime el destinatario, asunto y mensaje para el borrador."
         if "importante" in consulta:
             imp = _buscar_importantes()
             if imp: return "Importantes:\n"+("\n".join(imp))
             return "No hay correos importantes nuevos."
-        return _leer_inbox()
+        # Detectar filtro: "de X", "del X", "sobre X", "con asunto X"
+        filtro = ""
+        m = re.search(r'(?:de|del|sobre)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
+        if m:
+            term = m.group(1).strip()
+            if term in consulta.lower():
+                filtro = term
+        m = re.search(r'(?:asunto|tema|sobre)\s+(.+?)(?:\s*$)', consulta, re.I)
+        if m and not filtro:
+            filtro = m.group(1).strip()
+        return _leer_inbox(filtro=filtro)
 
     # 3. Clima / Gaming / Normal
     baja = consulta.lower()
