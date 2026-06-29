@@ -481,24 +481,40 @@ def generar_respuesta(mensaje):
 
         # --- Responder (borrador respuesta) ---
         if "responde" in consulta or "responder" in consulta:
-            eid, texto_resp = None, ""
+            eid, texto_resp, user_instruction = None, "", ""
             m_num = re.search(r'(?:al|el)\s*(\d+)', consulta)
-            if m_num:
-                eid = _email_por_numero(int(m_num.group(1)))
+            if m_num: eid = _email_por_numero(int(m_num.group(1)))
             if not eid:
                 barra = re.search(r'/(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta)
-                if barra:
-                    eid = _buscar_email_id(barra.group(1).strip())
+                if barra: eid = _buscar_email_id(barra.group(1).strip())
             if not eid:
                 m = re.search(r'(?:de|del|a)\s+(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta, re.I)
-                if m:
-                    eid = _buscar_email_id(m.group(1).strip())
+                if m: eid = _buscar_email_id(m.group(1).strip())
             m = re.search(r'(?:diciendo|que)\s+(.+?)(?:\s*$)', consulta, re.I)
             if m: texto_resp = m.group(1).strip()
-            if eid:
-                if texto_resp: return _crear_borrador_respuesta(eid, texto_resp)
-                return "Que texto pongo en la respuesta?"
-            return "A que email quieres responder?"
+            if not eid: return "A que email quieres responder?"
+
+            if texto_resp:
+                return _crear_borrador_respuesta(eid, texto_resp)
+
+            # Si no dijo el texto exacto, leemos el correo y la IA genera respuesta
+            cuerpo = _leer_cuerpo(eid)
+            if cuerpo.startswith("Gmail no") or cuerpo.startswith("Error"):
+                return f"No pude leer el correo: {cuerpo}"
+            # Extraer instruccion de estilo (lo que dijo despues del numero sin "diciendo")
+            resto = re.sub(r'^.*?(?:\b\d+\b)\s*', '', consulta, count=1).strip()
+            user_instruction = f" ({resto})" if resto and resto not in consulta[:5] else ""
+            msgs = [
+                {"role": "system", "content": f"Eres RyuBot, asistente que redacta respuestas de email en español. Hoy es {hoy}. Responde SOLO con el texto del email, sin explicaciones."},
+                {"role": "user", "content": f"Correo:\n{cuerpo}\n\nRedacta respuesta adecuada{user_instruction}."}
+            ]
+            try:
+                generado = ia_chat(msgs)
+                if generado:
+                    resultado = _crear_borrador_respuesta(eid, generado)
+                    return f"{resultado}\n\n{generado[:500]}"
+            except: pass
+            return "No pude generar la respuesta."
 
         # --- Borrador nuevo ---
         if "nuevo borrador" in consulta or "nuevo email" in consulta:
