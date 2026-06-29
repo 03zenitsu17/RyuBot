@@ -349,7 +349,7 @@ def recordar(mensaje, respuesta, topico=None):
 PALABRAS_CLIMA = ["tiempo","clima","temperatura","lluvia","calor","frio","soleado","nublado","paraguas","humedad","viento"]
 PALABRAS_GAMING = ["juego","jugar","videojuego","consola","nintendo","playstation","xbox","steam","switch","ps5","ps4","gta","pokemon","zelda","rumor","filtracion","lanzamiento","review","analisis","fps","metacritic","ventas","ign","eurogamer"]
 PALABRAS_RECORDATORIO = ["recordatorio","recuerda","recuerdame","avisame","avísame","alarma","notificame","cita","reunion","reunión","tarea","pendiente","plazo","vencimiento","sepe","labora"]
-PALABRAS_GMAIL = ["email","correo","gmail","mensaje","bandeja","inbox","leer email","revisa email","mira el correo","borrador","responder email","prepara respuesta","importante","cuerpo","contenido","responde","responder","respondele","borra borrador","borrar borrador","lista borradores"]
+PALABRAS_GMAIL = ["email","correo","gmail","mensaje","bandeja","inbox","leer email","revisa email","mira el correo","borrador","responder email","prepara respuesta","importante","cuerpo","contenido","encabezamiento","cabecera","asunto","remitente","responde","responder","respondele","borra borrador","borrar borrador","lista borradores"]
 
 def _detectar_topico(texto):
     baja = texto.lower()
@@ -374,6 +374,14 @@ def _reformular_consulta(mensaje):
         if limpio == baja: limpio = re.sub(r'^(?:y\s+|y\s*)?(?:en|de|para|del|de la)?\s*','',baja).strip()
         if limpio and len(limpio.split())<=2 and not any(w in limpio for w in ["tiempo","clima","que","como","cuando","donde"]): return f"tiempo en {limpio}"
     if baja.startswith("pero "): return mensaje
+
+    # Si el tema anterior era gmail, asumir que cualquier referencia es sobre correos
+    if ult_top and "gmail" in ult_top and not any(w in baja for w in PALABRAS_GMAIL):
+        m = re.search(r'(?:el|la|del|al)\s*(\d+)', baja)
+        if m:
+            return f"cuerpo del {m.group(1)}"
+        return f"correo {baja}"
+
     if baja.startswith(("y ","entonces ","tambien ","también ")):
         resto = re.sub(r'^(?:y|entonces|tambien|también)\s+','',baja)
         return f"{ult_top} {resto}" if ult_top else mensaje
