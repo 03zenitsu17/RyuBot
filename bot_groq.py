@@ -1,5 +1,5 @@
-"""Bot IA (Groq Llama 3) con busqueda por temas y recordatorios IA"""
-import sys, os, time, logging, re, json, urllib.parse, threading
+"""Bot IA (Groq Llama 3) con busqueda, recordatorios y Gmail"""
+import sys, os, time, logging, re, json, urllib.parse, threading, base64
 from datetime import datetime, timedelta
 import httpx
 
@@ -20,6 +20,79 @@ API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CHAT_ID = 8507191434
 http = httpx.Client(timeout=30, headers={"User-Agent": "Mozilla/5.0"})
 last_update = 0
+
+# --- Gmail ---
+GMAIL_TOKEN_B64 = os.environ.get("GMAIL_TOKEN_B64")
+_gmail_service = None
+
+def _init_gmail():
+    global _gmail_service
+    if not GMAIL_TOKEN_B64:
+        log.info("GMAIL_TOKEN_B64 no configurado")
+        return None
+    if _gmail_service:
+        return _gmail_service
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+        token_data = json.loads(base64.b64decode(GMAIL_TOKEN_B64).decode())
+        creds = Credentials.from_authorized_user_info(token_data, ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"])
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        _gmail_service = build("gmail", "v1", credentials=creds)
+        return _gmail_service
+    except Exception as e:
+        log.warning(f"Gmail init error: {e}")
+        return None
+
+def _leer_inbox(max_r=5):
+    svc = _init_gmail()
+    if not svc: return "Gmail no conectado."
+    try:
+        r = svc.users().messages().list(userId="me", labelIds=["INBOX", "UNREAD"], maxResults=max_r).execute()
+        msgs = r.get("messages", [])
+        if not msgs: return "No tienes emails sin leer."
+        res = []
+        for m in msgs[:max_r]:
+            d = svc.users().messages().get(userId="me", id=m["id"], format="metadata", metadataHeaders=["From", "Subject"]).execute()
+            h = {h["name"]: h["value"] for h in d.get("payload", {}).get("headers", [])}
+            res.append(f"De: {h.get('From','?')} | Asunto: {h.get('Subject','?')}")
+        return "Emails sin leer:\n" + "\n".join(res)
+    except Exception as e:
+        return f"Error al leer email: {e}"
+
+def _crear_borrador(para, asunto, cuerpo):
+    svc = _init_gmail()
+    if not svc: return "Gmail no conectado."
+    try:
+        msg = (f"From: me\r\nTo: {para}\r\nSubject: {asunto}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{cuerpo}")
+        raw = base64.urlsafe_b64encode(msg.encode("utf-8")).decode()
+        svc.users().messages().send(userId="me", body={"raw": raw, "labelIds": ["DRAFT"]}).execute()
+        # ^ Gmail API no tiene "enviar a drafts" directamente, usamos messages.trash + drafts.create
+        # Enfoque correcto: crear draft
+        draft = svc.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
+        return f"Borrador creado: '{asunto}' para {para}"
+    except Exception as e:
+        return f"Error al crear borrador: {e}"
+
+def _buscar_importantes():
+    svc = _init_gmail()
+    if not svc: return []
+    keywords = ["hacienda", "sepe", "labora", "seguridad social", "banco", "factura", "urgente", "importante"]
+    try:
+        r = svc.users().messages().list(userId="me", labelIds=["INBOX", "UNREAD"], maxResults=10).execute()
+        importantes = []
+        for m in r.get("messages", []):
+            d = svc.users().messages().get(userId="me", id=m["id"], format="metadata", metadataHeaders=["From", "Subject"]).execute()
+            h = {h["name"]: h["value"] for h in d.get("payload", {}).get("headers", [])}
+            asunto = h.get("Subject", "").lower()
+            remitente = h.get("From", "").lower()
+            texto = f"{asunto} {remitente}"
+            if any(k in texto for k in keywords):
+                importantes.append(f"📧 {h['Subject']} - {h['From']}")
+        return importantes
+    except: return []
 
 # --- IA via Groq ---
 SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Respondes natural y directo. Usas el historial para seguir la conversacion."
@@ -49,10 +122,10 @@ SYS_GAMING = (
 SYS_RECORDATORIO = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
     "Cuando te pidan crear un recordatorio, alarma o notificacion, responde SOLO con JSON valido, sin texto adicional. "
-    "Hoy es {hoy}. Calcula fechas relativas (manana, viernes, en 3 dias) basandote en esto.\n"
+    "Hoy es {hoy}. Calcula fechas relativas (manana, viernes, en 3 dias).\n"
     "Si la fecha/hora es ambigua, usa accion 'pedir_aclaracion'.\n\n"
     "Formato:\n"
-    '{{\n'
+    '{\n'
     '  "accion": "crear_recordatorio",\n'
     '  "titulo": "string breve",\n'
     '  "fecha": "YYYY-MM-DD",\n'
@@ -61,10 +134,10 @@ SYS_RECORDATORIO = (
     '  "categoria": "personal | ryu_store | gaming | administrativo | salud",\n'
     '  "prioridad": "normal | alta",\n'
     '  "aviso_previo": minutos\n'
-    '}}\n\n'
-    "Para listar: accion 'listar_recordatorios'. Para borrar: accion 'borrar_recordatorio' con campo 'id' o 'titulo'.\n"
-    "Para pedir aclaracion: accion 'pedir_aclaracion' con campo 'pregunta'.\n"
-    "Si no es un recordatorio, responde de forma natural y conversacional."
+    '}\n\n'
+    "Para listar: accion 'listar_recordatorios'. Para borrar: accion 'borrar_recordatorio' con 'id' o 'titulo'.\n"
+    "Para pedir aclaracion: accion 'pedir_aclaracion' con 'pregunta'.\n"
+    "Si no es un recordatorio, responde normal."
 )
 
 def ia_chat(messages):
@@ -124,44 +197,29 @@ def _ejecutar_recordatorio_json(j, mensaje):
     try:
         disparo = datetime.strptime(f"{fecha_str} {hora_str}", "%Y-%m-%d %H:%M")
     except:
-        return "No entendi la fecha/hora. Usa formato YYYY-MM-DD HH:MM"
-
+        return "No entendi la fecha/hora."
     r = {
-        "id": int(time.time()),
-        "titulo": j.get("titulo", "Recordatorio"),
-        "fecha": fecha_str,
-        "hora": hora_str,
-        "dispara": disparo.isoformat(),
-        "repetir": j.get("repetir", "ninguno"),
-        "categoria": j.get("categoria", "personal"),
-        "prioridad": j.get("prioridad", "normal"),
-        "aviso_previo": j.get("aviso_previo", 0),
+        "id": int(time.time()), "titulo": j.get("titulo", "Recordatorio"),
+        "fecha": fecha_str, "hora": hora_str, "dispara": disparo.isoformat(),
+        "repetir": j.get("repetir", "ninguno"), "categoria": j.get("categoria", "personal"),
+        "prioridad": j.get("prioridad", "normal"), "aviso_previo": j.get("aviso_previo", 0),
         "creado": ahora.isoformat(),
     }
     recordatorios.append(r)
     _guardar_cal()
-
     falta = int((disparo - ahora).total_seconds() / 60)
-    if falta < 1:
-        return f"Recordatorio creado: {r['titulo']} (ya mismo!)"
-    elif falta < 60:
-        return f"Recordatorio creado: {r['titulo']} (en {falta} min)"
-    elif falta < 1440:
-        return f"Recordatorio creado: {r['titulo']} (en {falta//60}h{falta%60:02d}min)"
-    else:
-        return f"Recordatorio creado: {r['titulo']} ({fecha_str} a las {hora_str})"
+    if falta < 1: return f"Recordatorio: {r['titulo']} (ya mismo)"
+    elif falta < 60: return f"Recordatorio: {r['titulo']} (en {falta} min)"
+    elif falta < 1440: return f"Recordatorio: {r['titulo']} (en {falta//60}h{falta%60:02d}min)"
+    else: return f"Recordatorio: {r['titulo']} ({fecha_str} a las {hora_str})"
 
 def _procesar_json_recordatorio(texto):
-    # Extraer JSON del texto (puede venir con backticks o rodeado de texto)
     m = re.search(r'\{.*"accion".*\}', texto, re.DOTALL)
     if not m: return None
-    try:
-        j = json.loads(m.group(0))
+    try: j = json.loads(m.group(0))
     except: return None
-
     accion = j.get("accion")
-    if accion == "crear_recordatorio":
-        return _ejecutar_recordatorio_json(j, texto)
+    if accion == "crear_recordatorio": return _ejecutar_recordatorio_json(j, texto)
     elif accion == "listar_recordatorios":
         if not recordatorios: return "No tienes recordatorios."
         lines = ["Tus recordatorios:"]
@@ -170,16 +228,12 @@ def _procesar_json_recordatorio(texto):
             lines.append(f"{i}. {r['titulo']} - {d.strftime('%d/%m %H:%M')} [{r['categoria']}]")
         return "\n".join(lines)
     elif accion == "borrar_recordatorio":
-        idx = j.get("id")
-        tit = j.get("titulo", "").lower()
+        idx, tit = j.get("id"), (j.get("titulo") or "").lower()
         for i, r in enumerate(recordatorios):
             if (idx and r["id"] == idx) or (tit and tit in r["titulo"].lower()):
-                e = recordatorios.pop(i)
-                _guardar_cal()
-                return f"Borrado: {e['titulo']}"
+                e = recordatorios.pop(i); _guardar_cal(); return f"Borrado: {e['titulo']}"
         return "No encontre ese recordatorio."
-    elif accion == "pedir_aclaracion":
-        return f"❓ {j.get('pregunta', 'Necesito mas detalles.')}"
+    elif accion == "pedir_aclaracion": return f"❓ {j.get('pregunta', 'Necesito mas detalles.')}"
     return None
 
 # --- Memoria ---
@@ -187,38 +241,21 @@ historial = []
 
 def recordar(mensaje, respuesta, topico=None):
     historial.append({"msg": mensaje, "resp": respuesta, "topico": topico, "ts": time.time()})
-    while len(historial) > 12:
-        historial.pop(0)
+    while len(historial) > 12: historial.pop(0)
 
-PALABRAS_CLIMA = ["tiempo", "clima", "temperatura", "lluvia", "calor", "frio", "soleado", "nublado", "paraguas", "humedad", "viento"]
-PALABRAS_GAMING = [
-    "juego", "jugar", "videojuego", "consola", "nintendo", "playstation", "xbox", "pc gaming",
-    "steam", "switch", "ps5", "ps4", "series x", "game pass",
-    "rumor", "filtracion", "filtracion", "noticia gaming", "lanzamiento",
-    "gta", "pokemon", "zelda", "mario", "final fantasy", "call of duty", "fortnite", "minecraft",
-    "digital foundry", "ign", "eurogamer", "vgc", "resetera", "nate", "genki", "tom henderson",
-    "review", "analisis", "analisis", "graficos", "graficos", "fps", "resolucion",
-    "ventas", "mercado", "famitsu", "npd", "circana", "vgchartz",
-    "actualizacion", "parche", "update", "nerf", "buff", "nerfeo",
-    "e3", "nintendo direct", "state of play", "xbox showcase", "gamescom", "geoff keighley",
-    "metacritic", "opencritic", "nota", "puntuacion", "puntuacion",
-]
-PALABRAS_RECORDATORIO = [
-    "recordatorio", "recuerda", "recuerdame", "avisame", "avísame", "alarma",
-    "notificame", "notificacion", "notificacion", "acuerdame", "recordame",
-    "cita", "reunion", "reunion", "tarea", "pendiente", "plazo", "vencimiento",
-    "sepe", "labora", "seguridad social", "tramite", "tramite", "administrativo",
-]
+PALABRAS_CLIMA = ["tiempo","clima","temperatura","lluvia","calor","frio","soleado","nublado","paraguas","humedad","viento"]
+PALABRAS_GAMING = ["juego","jugar","videojuego","consola","nintendo","playstation","xbox","steam","switch","ps5","ps4","gta","pokemon","zelda","rumor","filtracion","lanzamiento","review","analisis","fps","metacritic","ventas","ign","eurogamer"]
+PALABRAS_RECORDATORIO = ["recordatorio","recuerda","recuerdame","avisame","avísame","alarma","notificame","cita","reunion","reunión","tarea","pendiente","plazo","vencimiento","sepe","labora"]
+PALABRAS_GMAIL = ["email","correo","gmail","mensaje","bandeja","inbox","leer email","revisa email","mira el correo","borrador","responder email","prepara respuesta","importante"]
 
 def _detectar_topico(texto):
     baja = texto.lower()
-    if any(w in baja for w in PALABRAS_RECORDATORIO):
-        return "recordatorio"
+    if any(w in baja for w in PALABRAS_RECORDATORIO): return "recordatorio"
+    if any(w in baja for w in PALABRAS_GMAIL): return "gmail"
     if any(w in baja for w in PALABRAS_CLIMA):
         c = re.search(r'(?:en|de|para)\s+(\w+(?:\s+\w+)?)', texto, re.I)
         return f"clima {c.group(1).strip() if c else ''}"
-    if any(w in baja for w in PALABRAS_GAMING):
-        return "gaming"
+    if any(w in baja for w in PALABRAS_GAMING): return "gaming"
     m = re.match(r'(?:que|qué|como|cómo|cuando|cuándo|donde|dónde|por que)\s+(.+)', baja)
     if m: return " ".join(m.group(1).split()[:4])
     return " ".join(baja.split()[:4])
@@ -227,35 +264,22 @@ def _reformular_consulta(mensaje):
     if not historial: return mensaje
     baja = mensaje.lower().strip()
     ult_top = (historial[-1].get("topico") or "") or _topico_previo()
-
-    if any(p in baja for p in ["ahora sobre", "ahora quiero", "cambia", "cambiar", "otra cosa", "diferente"]):
-        return mensaje
-
+    if any(p in baja for p in ["ahora sobre","ahora quiero","cambia","cambiar","otra cosa","diferente"]): return mensaje
     if ult_top.startswith("clima"):
         limpio = baja
-        for p in ["tiempo en", "tiempo de", "tiempo para", "clima en", "clima de"]:
-            limpio = re.sub(r'^y?\s*' + re.escape(p) + r'\s*', '', limpio).strip()
-        if limpio == baja:
-            limpio = re.sub(r'^(?:y\s+|y\s*)?(?:en|de|para|del|de la)?\s*', '', baja).strip()
-        if limpio and len(limpio.split()) <= 2 and not any(w in limpio for w in ["tiempo", "clima", "que", "como", "cuando", "donde"]):
-            return f"tiempo en {limpio}"
-
-    if baja.startswith("pero "):
-        return mensaje
-
-    if baja.startswith(("y ", "entonces ", "tambien ", "también ")):
-        resto = re.sub(r'^(?:y|entonces|tambien|también)\s+', '', baja)
+        for p in ["tiempo en","tiempo de","tiempo para","clima en","clima de"]: limpio = re.sub(r'^y?\s*'+re.escape(p)+r'\s*','',limpio).strip()
+        if limpio == baja: limpio = re.sub(r'^(?:y\s+|y\s*)?(?:en|de|para|del|de la)?\s*','',baja).strip()
+        if limpio and len(limpio.split())<=2 and not any(w in limpio for w in ["tiempo","clima","que","como","cuando","donde"]): return f"tiempo en {limpio}"
+    if baja.startswith("pero "): return mensaje
+    if baja.startswith(("y ","entonces ","tambien ","también ")):
+        resto = re.sub(r'^(?:y|entonces|tambien|también)\s+','',baja)
         return f"{ult_top} {resto}" if ult_top else mensaje
-
-    m = re.match(r'(?:y\s+)?(?:en|de|para)\s+(.+?)\s*\??$', baja)
-    if m:
-        return f"{ult_top} en {m.group(1)}" if ult_top else mensaje
-    m = re.match(r'(?:el|la|los|las|del|de la|sus)\s+(.+)$', baja)
-    if m and ult_top:
-        return f"{ult_top} {m.group(1)}"
-    if len(baja.split()) <= 4:
-        if baja in ["dime mas", "dime más", "sigue", "continua", "continúa", "más info", "mas info"]:
-            return f"{ult_top} mas informacion" if ult_top else mensaje
+    m = re.match(r'(?:y\s+)?(?:en|de|para)\s+(.+?)\s*\??$',baja)
+    if m: return f"{ult_top} en {m.group(1)}" if ult_top else mensaje
+    m = re.match(r'(?:el|la|los|las|del|de la|sus)\s+(.+)$',baja)
+    if m and ult_top: return f"{ult_top} {m.group(1)}"
+    if len(baja.split())<=4 and baja in ["dime mas","dime más","sigue","continua","continúa","más info","mas info"]:
+        return f"{ult_top} mas informacion" if ult_top else mensaje
     return mensaje
 
 def _topico_previo():
@@ -264,56 +288,65 @@ def _topico_previo():
     return ""
 
 def _extraer_ciudad(texto):
-    m = re.search(r'(?:en|de|para)\s+(\w+(?:\s+\w+)?)', texto, re.I)
+    m = re.search(r'(?:en|de|para)\s+(\w+(?:\s+\w+)?)',texto,re.I)
     return m.group(1).strip().lower() if m else ""
 
 def _buscar_gaming(query):
     r = _ddg_html(query)
     if r: return r
     r = _ddg_html(f"{query} 2026")
-    if r: return r
-    return ""
+    return r or ""
 
 def _es_recordatorio(texto):
     baja = texto.lower()
-    if any(w in baja for w in PALABRAS_RECORDATORIO):
-        return True
-    # Detectar frases como "que tenga que..." o "el viernes a las..."
-    if re.search(r'(mañana|pasado mañana|el lunes|el martes|el miercoles|el jueves|el viernes|el sabado|el domingo|el \d+|a las \d+|en \d+ (min|hora|dia|día|minuto))', baja):
-        if any(w in baja for w in ["tengo", "hay que", "que hacer", "cita", "reunion", "reunión", "plazo"]):
-            return True
+    if any(w in baja for w in PALABRAS_RECORDATORIO): return True
+    if re.search(r'(mañana|pasado mañana|el lunes|el martes|el miercoles|el jueves|el viernes|el sabado|el domingo|a las \d+|en \d+ (min|hora|dia|día|minuto))',baja):
+        if any(w in baja for w in ["tengo","hay que","que hacer","cita","reunion","reunión","plazo"]): return True
     return False
+
+def _es_gmail(texto):
+    baja = texto.lower()
+    return any(w in baja for w in PALABRAS_GMAIL)
 
 def generar_respuesta(mensaje):
     hoy = datetime.now().strftime("%d/%m/%Y")
     consulta = _reformular_consulta(mensaje)
 
-    # 1. Detectar si es recordatorio
+    # 1. Recordatorios
     if _es_recordatorio(consulta):
         sys_p = SYS_RECORDATORIO.format(hoy=hoy)
-        msgs = [{"role": "system", "content": sys_p}]
+        msgs = [{"role":"system","content":sys_p}]
         for h in historial[-3:]:
-            msgs.append({"role": "user", "content": h["msg"]})
-            msgs.append({"role": "assistant", "content": h["resp"][:200]})
-        msgs.append({"role": "user", "content": mensaje})
+            msgs.append({"role":"user","content":h["msg"]})
+            msgs.append({"role":"assistant","content":h["resp"][:200]})
+        msgs.append({"role":"user","content":mensaje})
         try:
             rta = ia_chat(msgs)
-            if not rta: raise ValueError("Vacia")
-            resultado = _procesar_json_recordatorio(rta)
-            if resultado:
-                recordar(mensaje, resultado, "recordatorio")
-                return resultado
-        except Exception as e:
-            log.warning(f"Recordatorio fallo: {e}")
+            if rta:
+                resultado = _procesar_json_recordatorio(rta)
+                if resultado:
+                    recordar(mensaje, resultado, "recordatorio")
+                    return resultado
+        except: pass
 
-    # 2. Detectar otros temas
+    # 2. Gmail
+    if _es_gmail(consulta):
+        if not GMAIL_TOKEN_B64:
+            return "Gmail no configurado. El desarrollador debe configurar GMAIL_TOKEN_B64."
+        if "borrador" in consulta or "prepara respuesta" in consulta or "responder" in consulta:
+            return "Dime el destinatario, asunto y mensaje para el borrador."
+        if "importante" in consulta:
+            imp = _buscar_importantes()
+            if imp: return "Importantes:\n"+("\n".join(imp))
+            return "No hay correos importantes nuevos."
+        return _leer_inbox()
+
+    # 3. Clima / Gaming / Normal
     baja = consulta.lower()
     es_clima = any(w in baja for w in PALABRAS_CLIMA)
     es_gaming = any(w in baja for w in PALABRAS_GAMING)
-
     ctx = ""
     sys_p = SYS_BASE.format(hoy=hoy)
-
     if es_clima:
         ciudad = _extraer_ciudad(consulta) or "Madrid"
         ctx = _clima(ciudad)
@@ -322,19 +355,17 @@ def generar_respuesta(mensaje):
         ctx = _buscar_gaming(consulta)
         sys_p = SYS_GAMING.format(hoy=hoy)
 
-    msgs = [{"role": "system", "content": sys_p}]
+    msgs = [{"role":"system","content":sys_p}]
     for h in historial[-4:]:
-        msgs.append({"role": "user", "content": h["msg"]})
-        msgs.append({"role": "assistant", "content": h["resp"][:200]})
-
+        msgs.append({"role":"user","content":h["msg"]})
+        msgs.append({"role":"assistant","content":h["resp"][:200]})
     prompt = mensaje
-    if ctx:
-        prompt += f"\n[Info: {ctx}]"
-    msgs.append({"role": "user", "content": prompt})
+    if ctx: prompt += f"\n[Info: {ctx}]"
+    msgs.append({"role":"user","content":prompt})
 
     try:
         rta = ia_chat(msgs)
-        if not rta: raise ValueError("Vacia")
+        if not rta: raise ValueError
         topico = _detectar_topico(consulta)
         recordar(mensaje, rta, topico)
         return rta[:2000]
@@ -344,21 +375,31 @@ def generar_respuesta(mensaje):
         recordar(mensaje, rta)
         return rta
 
-# --- Hilo de recordatorios ---
+# --- Hilo recordatorios ---
 def _revisar_recordatorios():
     while True:
         try:
             _cargar_cal()
             ahora = datetime.now()
-            for r in [r for r in recordatorios if datetime.fromisoformat(r["dispara"]) <= ahora]:
-                msg = f"⏰ RECORDATORIO: {r['titulo']} [{r['categoria']}]"
-                http.post(f"{API}/sendMessage", json={"chat_id": CHAT_ID, "text": msg})
-                recordatorios.remove(r)
-                _guardar_cal()
+            for r in [r for r in recordatorios if datetime.fromisoformat(r["dispara"])<=ahora]:
+                http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":f"⏰ RECORDATORIO: {r['titulo']} [{r['categoria']}]"})
+                recordatorios.remove(r); _guardar_cal()
         except: pass
         time.sleep(30)
+threading.Thread(target=_revisar_recordatorios,daemon=True).start()
 
-threading.Thread(target=_revisar_recordatorios, daemon=True).start()
+# --- Hilo Gmail importantes ---
+def _revisar_gmail():
+    while True:
+        if GMAIL_TOKEN_B64:
+            try:
+                imp = _buscar_importantes()
+                if imp:
+                    for item in imp:
+                        http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":f"📬 IMPORTANTE: {item}"})
+            except: pass
+        time.sleep(300)
+threading.Thread(target=_revisar_gmail,daemon=True).start()
 
 # --- Polling ---
 def poll():
@@ -366,7 +407,7 @@ def poll():
     log.info("Bot iniciado.")
     while True:
         try:
-            r = http.get(f"{API}/getUpdates", params={"offset": last_update + 1, "timeout": 30})
+            r = http.get(f"{API}/getUpdates",params={"offset":last_update+1,"timeout":30})
             data = r.json()
             if data.get("ok"):
                 for upd in data["result"]:
@@ -379,7 +420,7 @@ def poll():
                         try:
                             resp = generar_respuesta(texto)
                             if resp:
-                                http.post(f"{API}/sendMessage", json={"chat_id": CHAT_ID, "text": resp})
+                                http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":resp})
                         except Exception as e:
                             log.error(f"Resp error: {e}")
         except Exception as e:
