@@ -345,16 +345,21 @@ def generar_respuesta(mensaje):
             imp = _buscar_importantes()
             if imp: return "Importantes:\n"+("\n".join(imp))
             return "No hay correos importantes nuevos."
-        # Detectar filtro: "de X", "del X", "sobre X", "con asunto X"
         filtro = ""
-        m = re.search(r'(?:de|del|sobre)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
-        if m:
-            term = m.group(1).strip()
-            if term in consulta.lower():
-                filtro = term
-        m = re.search(r'(?:asunto|tema|sobre)\s+(.+?)(?:\s*$)', consulta, re.I)
+        # Orden: "sobre/acerca de" antes que "de" para evitar confusion
+        m = re.search(r'(?:sobre|acerca de)\s+(.+?)(?:\s*$)', consulta, re.I)
+        if m: filtro = m.group(1).strip()
+        # "de X" -> from:X (solo si no hay filtro ya)
+        if not filtro:
+            m = re.search(r'(?:de|del)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
+            if m:
+                t = m.group(1).strip()
+                if t.lower() in consulta.lower():
+                    filtro = f"from:{t}"
+        # "asunto X" -> subject:X
+        m = re.search(r'(?:asunto|tema)\s+(.+?)(?:\s*$)', consulta, re.I)
         if m and not filtro:
-            filtro = m.group(1).strip()
+            filtro = f"subject:{m.group(1).strip()}"
         return _leer_inbox(filtro=filtro)
 
     # 3. Clima / Gaming / Normal
