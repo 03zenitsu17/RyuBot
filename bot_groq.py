@@ -68,19 +68,104 @@ def _leer_inbox(max_r=5, filtro=""):
     except Exception as e:
         return f"Error al leer email: {e}"
 
-def _crear_borrador(para, asunto, cuerpo):
+def _leer_cuerpo(email_id):
+    svc = _init_gmail()
+    if not svc: return "Gmail no conectado."
+    try:
+        d = svc.users().messages().get(userId="me", id=email_id, format="full").execute()
+        h = {h["name"]: h["value"] for h in d.get("payload", {}).get("headers", [])}
+        cuerpo = ""
+        parts = d.get("payload", {}).get("parts", [])
+        if not parts and d.get("payload", {}).get("body", {}).get("data"):
+            cuerpo = d["payload"]["body"]["data"]
+        else:
+            for p in parts:
+                if p["mimeType"] == "text/plain" and p.get("body", {}).get("data"):
+                    cuerpo = p["body"]["data"]
+                    break
+        if cuerpo:
+            cuerpo = base64.urlsafe_b64decode(cuerpo).decode("utf-8", errors="replace")[:1000]
+        return f"De: {h.get('From','?')}\nAsunto: {h.get('Subject','?')}\n\n{cuerpo}"
+    except Exception as e:
+        return f"Error: {e}"
+
+def _crear_borrador_respuesta(email_id, cuerpo_respuesta):
+    """Crea borrador de respuesta a un email existente"""
+    svc = _init_gmail()
+    if not svc: return "Gmail no conectado."
+    try:
+        orig = svc.users().messages().get(userId="me", id=email_id, format="metadata", metadataHeaders=["From", "Subject", "Message-ID", "References"]).execute()
+        h = {h["name"]: h["value"] for h in orig.get("payload", {}).get("headers", [])}
+        para = h.get("From", "")
+        asunto = h.get("Subject", "")
+        if not asunto.startswith("Re: "): asunto = f"Re: {asunto}"
+        msg_id = h.get("Message-ID", "")
+        refs = h.get("References", "") or msg_id
+        msg = (
+            f"From: me\r\nTo: {para}\r\nSubject: {asunto}\r\n"
+            f"In-Reply-To: {msg_id}\r\nReferences: {refs}\r\n"
+            f"MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{cuerpo_respuesta}"
+        )
+        raw = base64.urlsafe_b64encode(msg.encode("utf-8")).decode()
+        draft = svc.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
+        return f"Borrador respuesta creado para '{h.get('Subject','?')}'"
+    except Exception as e:
+        return f"Error: {e}"
+
+def _crear_borrador_nuevo(para, asunto, cuerpo):
     svc = _init_gmail()
     if not svc: return "Gmail no conectado."
     try:
         msg = (f"From: me\r\nTo: {para}\r\nSubject: {asunto}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{cuerpo}")
         raw = base64.urlsafe_b64encode(msg.encode("utf-8")).decode()
-        svc.users().messages().send(userId="me", body={"raw": raw, "labelIds": ["DRAFT"]}).execute()
-        # ^ Gmail API no tiene "enviar a drafts" directamente, usamos messages.trash + drafts.create
-        # Enfoque correcto: crear draft
         draft = svc.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
         return f"Borrador creado: '{asunto}' para {para}"
     except Exception as e:
-        return f"Error al crear borrador: {e}"
+        return f"Error: {e}"
+
+def _listar_borradores():
+    svc = _init_gmail()
+    if not svc: return "Gmail no conectado."
+    try:
+        r = svc.users().drafts().list(userId="me", maxResults=10).execute()
+        drafts = r.get("drafts", [])
+        if not drafts: return "No tienes borradores."
+        res = []
+        for d in drafts:
+            m = svc.users().messages().get(userId="me", id=d["message"]["id"], format="metadata", metadataHeaders=["To", "Subject"]).execute()
+            h = {h["name"]: h["value"] for h in m.get("payload", {}).get("headers", [])}
+            res.append(f"ID:{d['id']} | Para: {h.get('To','?')} | {h.get('Subject','?')}")
+        return "Borradores:\n" + "\n".join(res)
+    except Exception as e:
+        return f"Error: {e}"
+
+def _borrar_borrador(criterio):
+    svc = _init_gmail()
+    if not svc: return "Gmail no conectado."
+    try:
+        r = svc.users().drafts().list(userId="me", maxResults=20).execute()
+        for d in r.get("drafts", []):
+            m = svc.users().messages().get(userId="me", id=d["message"]["id"], format="metadata", metadataHeaders=["To", "Subject"]).execute()
+            h = {h["name"]: h["value"] for h in m.get("payload", {}).get("headers", [])}
+            texto = f"{h.get('To','')} {h.get('Subject','')}".lower()
+            if criterio.lower() in texto:
+                svc.users().drafts().delete(userId="me", id=d["id"]).execute()
+                return f"Borrador eliminado: {h.get('Subject','?')}"
+        return "No encontre un borrador con ese criterio."
+    except Exception as e:
+        return f"Error: {e}"
+
+def _buscar_email_id(termino):
+    """Devuelve el ID del primer email no leido que coincida"""
+    svc = _init_gmail()
+    if not svc: return None
+    try:
+        from googleapiclient.errors import HttpError
+        r = svc.users().messages().list(userId="me", labelIds=["INBOX", "UNREAD"], q=termino, maxResults=1).execute()
+        msgs = r.get("messages", [])
+        if msgs: return msgs[0]["id"]
+    except: pass
+    return None
 
 def _buscar_importantes():
     svc = _init_gmail()
@@ -252,7 +337,7 @@ def recordar(mensaje, respuesta, topico=None):
 PALABRAS_CLIMA = ["tiempo","clima","temperatura","lluvia","calor","frio","soleado","nublado","paraguas","humedad","viento"]
 PALABRAS_GAMING = ["juego","jugar","videojuego","consola","nintendo","playstation","xbox","steam","switch","ps5","ps4","gta","pokemon","zelda","rumor","filtracion","lanzamiento","review","analisis","fps","metacritic","ventas","ign","eurogamer"]
 PALABRAS_RECORDATORIO = ["recordatorio","recuerda","recuerdame","avisame","avísame","alarma","notificame","cita","reunion","reunión","tarea","pendiente","plazo","vencimiento","sepe","labora"]
-PALABRAS_GMAIL = ["email","correo","gmail","mensaje","bandeja","inbox","leer email","revisa email","mira el correo","borrador","responder email","prepara respuesta","importante"]
+PALABRAS_GMAIL = ["email","correo","gmail","mensaje","bandeja","inbox","leer email","revisa email","mira el correo","borrador","responder email","prepara respuesta","importante","cuerpo","contenido","responde","responder","respondele","borra borrador","borrar borrador","lista borradores"]
 
 def _detectar_topico(texto):
     baja = texto.lower()
@@ -339,24 +424,70 @@ def generar_respuesta(mensaje):
     if _es_gmail(consulta):
         if not GMAIL_TOKEN_B64:
             return "Gmail no configurado."
-        if "borrador" in consulta or "prepara respuesta" in consulta or "responder" in consulta:
-            return "Dime el destinatario, asunto y mensaje para el borrador."
+
+        # --- Listar borradores ---
+        if "lista" in consulta and "borrador" in consulta:
+            return _listar_borradores()
+
+        # --- Borrar borrador ---
+        if ("borra" in consulta or "elimina" in consulta) and "borrador" in consulta:
+            m = re.search(r'(?:borrador|de)\s+(.+?)(?:\s*$)', consulta, re.I)
+            if m:
+                return _borrar_borrador(m.group(1).strip())
+            return "Que borrador quieres borrar?"
+
+        # --- Leer cuerpo de un email especifico ---
+        if "cuerpo" in consulta or "contenido" in consulta or "lee" in consulta or "leer" in consulta:
+            term = ""
+            m = re.search(r'(?:de|del)\s+(.+?)(?:\s*$)', consulta, re.I)
+            if m: term = m.group(1).strip()
+            if term:
+                eid = _buscar_email_id(f"from:{term}")
+                if eid: return _leer_cuerpo(eid)
+                eid = _buscar_email_id(term)
+                if eid: return _leer_cuerpo(eid)
+                return f"No encontre email de {term}."
+            return _leer_inbox()
+
+        # --- Borrador de respuesta a un email ---
+        if "responde" in consulta or "responder" in consulta or "respondele" in consulta:
+            term, texto_resp = "", ""
+            m = re.search(r'(?:de|del|a)\s+(.+?)(?:\s+diciendo|\s+que\s+|\s*$)', consulta, re.I)
+            if m: term = m.group(1).strip()
+            # Extraer el texto del mensaje después de "diciendo" o "que"
+            m = re.search(r'(?:diciendo|que)\s+(.+?)(?:\s*$)', consulta, re.I)
+            if m: texto_resp = m.group(1).strip()
+            if term:
+                eid = _buscar_email_id(f"from:{term}")
+                if not eid: eid = _buscar_email_id(term)
+                if eid:
+                    if texto_resp:
+                        return _crear_borrador_respuesta(eid, texto_resp)
+                    else:
+                        return f"Que texto pongo en la respuesta a {term}?"
+                return f"No encontre email de {term}."
+            return "A que email quieres responder?"
+
+        # --- Borrador nuevo ---
+        if "nuevo borrador" in consulta or "nuevo email" in consulta or "borrador nuevo" in consulta:
+            return "Dime: para quien, asunto y mensaje."
+
+        # --- Importantes ---
         if "importante" in consulta:
             imp = _buscar_importantes()
             if imp: return "Importantes:\n"+("\n".join(imp))
             return "No hay correos importantes nuevos."
+
+        # --- Leer inbox con filtro ---
         filtro = ""
-        # Orden: "sobre/acerca de" antes que "de" para evitar confusion
         m = re.search(r'(?:sobre|acerca de)\s+(.+?)(?:\s*$)', consulta, re.I)
         if m: filtro = m.group(1).strip()
-        # "de X" -> from:X (solo si no hay filtro ya)
         if not filtro:
             m = re.search(r'(?:de|del)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
             if m:
                 t = m.group(1).strip()
                 if t.lower() in consulta.lower():
                     filtro = f"from:{t}"
-        # "asunto X" -> subject:X
         m = re.search(r'(?:asunto|tema)\s+(.+?)(?:\s*$)', consulta, re.I)
         if m and not filtro:
             filtro = f"subject:{m.group(1).strip()}"
