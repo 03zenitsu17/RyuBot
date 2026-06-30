@@ -48,6 +48,10 @@ def _init_gmail():
 
 _ultima_lista_emails = []  # [(id, from, subject)]
 
+def _h(text):
+    """Escapa HTML"""
+    return text.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+
 def _leer_inbox(max_r=5, filtro="", solo_no_leidos=True, solo_ultimo=False):
     svc = _init_gmail()
     if not svc: return "Gmail no conectado."
@@ -66,11 +70,14 @@ def _leer_inbox(max_r=5, filtro="", solo_no_leidos=True, solo_ultimo=False):
         _ultima_lista_emails = []
         for i, m in enumerate(msgs[:max_r], 1):
             d = svc.users().messages().get(userId="me", id=m["id"], format="metadata", metadataHeaders=["From", "Subject", "Date"]).execute()
-            h = {h["name"]: h["value"] for h in d.get("payload", {}).get("headers", [])}
-            _ultima_lista_emails.append((m["id"], h.get("From","?"), h.get("Subject","?")))
-            res.append(f"{i}. De: {h.get('From','?')} | Asunto: {h.get('Subject','?')} | {h.get('Date','?')}")
-        titulo = f"Emails {'con ' + filtro if filtro else ''}:\n"
-        return titulo + "\n".join(res[:max_r])
+            hd = {h["name"]: h["value"] for h in d.get("payload", {}).get("headers", [])}
+            _de = _h(hd.get("From","?"))
+            _asunto = _h(hd.get("Subject","?"))
+            _fecha = _h(hd.get("Date","?"))
+            _ultima_lista_emails.append((m["id"], hd.get("From","?"), hd.get("Subject","?")))
+            res.append(f"<b>{i}.</b> <b>De:</b> {_de}\n    <b>Asunto:</b> {_asunto}\n    <i>{_fecha}</i>")
+        titulo = f"<b>📬 Emails {'con ' + _h(filtro) if filtro else ''}:</b>"
+        return titulo + "\n" + "\n─────────────\n".join(res[:max_r])
     except Exception as e:
         return f"Error al leer email: {e}"
 
@@ -91,9 +98,12 @@ def _leer_cuerpo(email_id):
                     break
         if cuerpo:
             cuerpo = base64.urlsafe_b64decode(cuerpo).decode("utf-8", errors="replace")[:1000]
-        return f"De: {h.get('From','?')}\nAsunto: {h.get('Subject','?')}\n\n{cuerpo}"
+        _de = _h(h.get("From","?"))
+        _asunto = _h(h.get("Subject","?"))
+        _cuerpo = _h(cuerpo)
+        return f"<b>De:</b> {_de}\n<b>Asunto:</b> {_asunto}\n\n{_cuerpo}"
     except Exception as e:
-        return f"Error: {e}"
+        return f"<b>Error:</b> {_h(str(e))}"
 
 def _crear_borrador_respuesta(email_id, cuerpo_respuesta):
     """Crea borrador de respuesta a un email existente"""
@@ -592,7 +602,9 @@ def _revisar_recordatorios():
             _cargar_cal()
             ahora = datetime.now()
             for r in [r for r in recordatorios if datetime.fromisoformat(r["dispara"])<=ahora]:
-                http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":f"⏰ RECORDATORIO: {r['titulo']} [{r['categoria']}]"})
+                http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":f"⏰ <b>RECORDATORIO:</b> {_h(r['titulo'])} [{r['categoria']}]","parse_mode":"HTML"})
+
+
                 recordatorios.remove(r); _guardar_cal()
         except: pass
         time.sleep(30)
@@ -606,7 +618,7 @@ def _revisar_gmail():
                 imp = _buscar_importantes()
                 if imp:
                     for item in imp:
-                        http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":f"📬 IMPORTANTE: {item}"})
+                        http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":f"📬 <b>IMPORTANTE:</b> {_h(item)}","parse_mode":"HTML"})
             except: pass
         time.sleep(300)
 threading.Thread(target=_revisar_gmail,daemon=True).start()
@@ -630,7 +642,7 @@ def poll():
                         try:
                             resp = generar_respuesta(texto)
                             if resp:
-                                http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":resp})
+                                http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":_h(resp) if "<" not in resp else resp,"parse_mode":"HTML"})
                         except Exception as e:
                             log.error(f"Resp error: {e}")
         except Exception as e:
