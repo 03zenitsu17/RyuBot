@@ -208,7 +208,7 @@ def _buscar_importantes():
     except: return []
 
 # --- IA via Groq ---
-SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Usa emojis apropiados y estructura tus respuestas con titulos y separacion para que sean atractivas y faciles de leer. Usas el historial para seguir la conversacion."
+SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Usa emojis apropiados y estructura tus respuestas con titulos y separacion para que sean atractivas y faciles de leer. Cuando hagas listas numeradas, separa cada elemento con UNA LINEA EN BLANCO para que sea mas legible. Usas el historial para seguir la conversacion."
 
 SYS_CLIMA = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
@@ -643,7 +643,10 @@ def poll():
                         try:
                             resp = generar_respuesta(texto)
                             if resp:
-                                # Enviar con HTML si ya tiene formato, si no escapar
+                                # Separar elementos numerados con linea en blanco
+                                resp = re.sub(r'(\d+[\.\)])\s+', r'\1\n', resp)
+                                resp = re.sub(r'\n(\d+[\.\)])', r'\n\n\1', resp)
+                                resp = resp.replace("\n\n\n", "\n\n")
                                 txt = resp if "<b>" in resp or "<i>" in resp else _h(resp)
                                 http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":txt,"parse_mode":"HTML"})
                         except Exception as e:
