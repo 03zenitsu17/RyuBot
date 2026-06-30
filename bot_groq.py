@@ -208,27 +208,27 @@ def _buscar_importantes():
     except: return []
 
 # --- IA via Groq ---
-SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. FORMATO: usa -titulo- para titulos (con guiones), NUNCA uses ** ni asteriscos. Siempre que des informacion de un libro, juego, trabajo, etc, indica al final la fuente o autor: 'Fuente: ...'. Usa emojis apropiados. Separa elementos de listas con linea en blanco. Usas el historial."
+SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. NUNCA uses ** ni asteriscos ni -titulo- ni ningun formato especial con simbolos. Escribe natural, con emojis apropiados. Cuando cites un libro, juego o trabajo, indica al final: Fuente: autor o sitio. Separa elementos de listas con linea en blanco. Usas el historial."
 
 SYS_CLIMA = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
-    "Cuando te pregunten por el clima SIGUE estas reglas:\n"
-    "1. NUNCA menciones fuentes, paginas web, sitios, ni sugieras buscar.\n"
-    "2. NUNCA inventes el clima. Responde solo con los datos que te doy.\n"
-    "3. FORMATO: -titulo-, NUNCA uses **.\n"
-    "4. Responde breve: temperatura actual, maxima/minima, lluvia.\n"
-    "5. Usa emojis del clima. Por defecto Madrid, salvo que digan otra.\n"
+    "Cuando te pregunten por el clima:\n"
+    "1. NUNCA menciones fuentes ni paginas web.\n"
+    "2. NUNCA inventes. Responde solo con los datos que te doy.\n"
+    "3. NUNCA uses ** ni -titulo- ni formatos especiales.\n"
+    "4. Responde breve: temperatura, maxima/minima, lluvia. Usa emojis.\n"
+    "5. Por defecto Madrid, salvo que digan otra ciudad.\n"
 )
 
 SYS_GAMING = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
-    "Cuando te pregunten sobre juegos SIGUE estas reglas:\n"
-    "1. Busca informacion actualizada en los datos que te doy.\n"
-    "2. FORMATO: -titulo-, NUNCA uses **. Usa emojis. Separa con lineas en blanco.\n"
-    "3. Las fuentes fiables vienen en los datos. Si una fuente es poco fiable, dimelo.\n"
-    "4. Siempre indica al final: 'Fuente: ...' con el nombre de la fuente de la info.\n"
-    "5. Por defecto conciso, si piden analisis profundo amplia.\n"
-    "6. NUNCA menciones paginas web ni buscar en internet.\n"
+    "Cuando te pregunten sobre juegos:\n"
+    "1. Busca info actualizada en los datos que te doy.\n"
+    "2. NUNCA uses ** ni -titulo- ni formatos especiales. Usa emojis.\n"
+    "3. Si una fuente es poco fiable, dimelo.\n"
+    "4. Indica al final: Fuente: [nombre de la fuente].\n"
+    "5. Separa listas con linea en blanco.\n"
+    "6. NUNCA menciones paginas web.\n"
 )
 
 SYS_RECORDATORIO = (
@@ -641,8 +641,9 @@ def poll():
                         try:
                             resp = generar_respuesta(texto)
                             if resp:
-                                # Limpiar ** y separar elementos numerados
-                                resp = resp.replace("**", "")
+                                # Limpiar formatos especiales y separar listas
+                                resp = resp.replace("**", "").replace("--", "")
+                                resp = re.sub(r'^-\s*|-\s*$', '', resp, flags=re.M)
                                 resp = re.sub(r'\n(\d+[\.\)])', r'\n\n\1', resp)
                                 resp = resp.replace("\n\n\n", "\n\n")
                                 txt = resp if "<b>" in resp or "<i>" in resp else _h(resp)
