@@ -208,29 +208,27 @@ def _buscar_importantes():
     except: return []
 
 # --- IA via Groq ---
-SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Usa emojis apropiados y estructura tus respuestas con titulos y separacion para que sean atractivas y faciles de leer. Cuando hagas listas numeradas, separa cada elemento con UNA LINEA EN BLANCO para que sea mas legible. Usas el historial para seguir la conversacion."
+SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. FORMATO: usa -titulo- para titulos (con guiones), NUNCA uses ** ni asteriscos. Siempre que des informacion de un libro, juego, trabajo, etc, indica al final la fuente o autor: 'Fuente: ...'. Usa emojis apropiados. Separa elementos de listas con linea en blanco. Usas el historial."
 
 SYS_CLIMA = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
     "Cuando te pregunten por el clima SIGUE estas reglas:\n"
-    "1. NUNCA menciones fuentes, paginas web, sitios, ni sugieras buscar en internet.\n"
+    "1. NUNCA menciones fuentes, paginas web, sitios, ni sugieras buscar.\n"
     "2. NUNCA inventes el clima. Responde solo con los datos que te doy.\n"
-    "3. Responde breve: temperatura actual, maxima/minima del dia, si va a llover.\n"
-    "4. Usa emojis del clima (🌡️☀️🌧️❄️ etc) y estructura la respuesta bonita.\n"
-    "5. Por defecto asume Madrid, salvo que digan otra ciudad.\n"
-    "Usas el historial para seguir la conversacion."
+    "3. FORMATO: -titulo-, NUNCA uses **.\n"
+    "4. Responde breve: temperatura actual, maxima/minima, lluvia.\n"
+    "5. Usa emojis del clima. Por defecto Madrid, salvo que digan otra.\n"
 )
 
 SYS_GAMING = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
-    "Cuando te pregunten sobre juegos, consolas, rumores o noticias SIGUE estas reglas:\n"
+    "Cuando te pregunten sobre juegos SIGUE estas reglas:\n"
     "1. Busca informacion actualizada en los datos que te doy.\n"
-    "2. Usa emojis (🎮🕹️📰🔥 etc), titulos y separacion para que sea bonito y facil de leer.\n"
-    "3. Las fuentes fiables segun el tema vienen en los datos. Si una fuente es poco fiable, dimelo.\n"
-    "4. Da respuestas organizadas: si hay fuentes con opiniones distintas, separalas.\n"
-    "5. Por defecto se conciso, si piden analisis profundo amplia.\n"
-    "6. NUNCA menciones ni sugieras paginas web o buscar en internet.\n"
-    "Usas el historial para seguir la conversacion."
+    "2. FORMATO: -titulo-, NUNCA uses **. Usa emojis. Separa con lineas en blanco.\n"
+    "3. Las fuentes fiables vienen en los datos. Si una fuente es poco fiable, dimelo.\n"
+    "4. Siempre indica al final: 'Fuente: ...' con el nombre de la fuente de la info.\n"
+    "5. Por defecto conciso, si piden analisis profundo amplia.\n"
+    "6. NUNCA menciones paginas web ni buscar en internet.\n"
 )
 
 SYS_RECORDATORIO = (
@@ -643,8 +641,8 @@ def poll():
                         try:
                             resp = generar_respuesta(texto)
                             if resp:
-                                # Separar elementos numerados con linea en blanco
-                                resp = re.sub(r'(\d+[\.\)])\s+', r'\1\n', resp)
+                                # Limpiar ** y separar elementos numerados
+                                resp = resp.replace("**", "")
                                 resp = re.sub(r'\n(\d+[\.\)])', r'\n\n\1', resp)
                                 resp = resp.replace("\n\n\n", "\n\n")
                                 txt = resp if "<b>" in resp or "<i>" in resp else _h(resp)
