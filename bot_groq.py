@@ -208,7 +208,7 @@ def _buscar_importantes():
     except: return []
 
 # --- IA via Groq ---
-SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. NUNCA uses ** ni asteriscos ni -titulo- ni ningun formato especial con simbolos. Escribe natural, con emojis apropiados. Cuando cites un libro, juego o trabajo, indica al final: Fuente: autor o sitio. Separa elementos de listas con linea en blanco. Usas el historial."
+SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. NUNCA uses ** ni asteriscos. Cuando recomiendes algo (libro, juego, pelicula, etc) usa SIEMPRE este formato:\n\n-titulo-\nexplicacion del contenido\n\npor que lo recomiendo\n\ncosas buenas y malas\n\nFuente: autor/creador/sitio\n\nSepara secciones con linea en blanco. Usa emojis apropiados. Usas el historial para seguir la conversacion."
 
 SYS_CLIMA = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
@@ -641,9 +641,8 @@ def poll():
                         try:
                             resp = generar_respuesta(texto)
                             if resp:
-                                # Limpiar formatos especiales y separar listas
-                                resp = resp.replace("**", "").replace("--", "")
-                                resp = re.sub(r'^-\s*|-\s*$', '', resp, flags=re.M)
+                                # Limpiar ** y separar listas
+                                resp = resp.replace("**", "")
                                 resp = re.sub(r'\n(\d+[\.\)])', r'\n\n\1', resp)
                                 resp = resp.replace("\n\n\n", "\n\n")
                                 txt = resp if "<b>" in resp or "<i>" in resp else _h(resp)
