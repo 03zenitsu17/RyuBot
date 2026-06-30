@@ -124,9 +124,9 @@ def _crear_borrador_respuesta(email_id, cuerpo_respuesta):
         )
         raw = base64.urlsafe_b64encode(msg.encode("utf-8")).decode()
         draft = svc.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
-        return f"Borrador respuesta creado para '{h.get('Subject','?')}'"
+        return f"✅ Borrador respuesta creado para:\n<b>Asunto:</b> {_h(h.get('Subject','?'))}"
     except Exception as e:
-        return f"Error: {e}"
+        return f"<b>Error:</b> {_h(str(e))}"
 
 def _crear_borrador_nuevo(para, asunto, cuerpo):
     svc = _init_gmail()
@@ -145,15 +145,15 @@ def _listar_borradores():
     try:
         r = svc.users().drafts().list(userId="me", maxResults=10).execute()
         drafts = r.get("drafts", [])
-        if not drafts: return "No tienes borradores."
+        if not drafts: return "📭 No tienes borradores."
         res = []
-        for d in drafts:
+        for i, d in enumerate(drafts, 1):
             m = svc.users().messages().get(userId="me", id=d["message"]["id"], format="metadata", metadataHeaders=["To", "Subject"]).execute()
             h = {h["name"]: h["value"] for h in m.get("payload", {}).get("headers", [])}
-            res.append(f"ID:{d['id']} | Para: {h.get('To','?')} | {h.get('Subject','?')}")
-        return "Borradores:\n" + "\n".join(res)
+            res.append(f"<b>{i}.</b> Para: {_h(h.get('To','?'))}\n    Asunto: {_h(h.get('Subject','?'))}")
+        return "📝 <b>Borradores:</b>\n" + "\n─────────────\n".join(res)
     except Exception as e:
-        return f"Error: {e}"
+        return f"<b>Error:</b> {_h(str(e))}"
 
 def _borrar_borrador(criterio):
     svc = _init_gmail()
@@ -166,10 +166,10 @@ def _borrar_borrador(criterio):
             texto = f"{h.get('To','')} {h.get('Subject','')}".lower()
             if criterio.lower() in texto:
                 svc.users().drafts().delete(userId="me", id=d["id"]).execute()
-                return f"Borrador eliminado: {h.get('Subject','?')}"
+                return f"🗑️ <b>Borrador eliminado:</b> {_h(h.get('Subject','?'))}"
         return "No encontre un borrador con ese criterio."
     except Exception as e:
-        return f"Error: {e}"
+        return f"<b>Error:</b> {_h(str(e))}"
 
 def _email_por_numero(n):
     global _ultima_lista_emails
@@ -208,7 +208,7 @@ def _buscar_importantes():
     except: return []
 
 # --- IA via Groq ---
-SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Respondes natural y directo. Usas el historial para seguir la conversacion."
+SYS_BASE = "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. Usa emojis apropiados y estructura tus respuestas con titulos y separacion para que sean atractivas y faciles de leer. Usas el historial para seguir la conversacion."
 
 SYS_CLIMA = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
@@ -216,7 +216,7 @@ SYS_CLIMA = (
     "1. NUNCA menciones fuentes, paginas web, sitios, ni sugieras buscar en internet.\n"
     "2. NUNCA inventes el clima. Responde solo con los datos que te doy.\n"
     "3. Responde breve: temperatura actual, maxima/minima del dia, si va a llover.\n"
-    "4. Si piden mas detalle (varios dias, viento, humedad), amplialo.\n"
+    "4. Usa emojis del clima (🌡️☀️🌧️❄️ etc) y estructura la respuesta bonita.\n"
     "5. Por defecto asume Madrid, salvo que digan otra ciudad.\n"
     "Usas el historial para seguir la conversacion."
 )
@@ -224,11 +224,12 @@ SYS_CLIMA = (
 SYS_GAMING = (
     "Eres RyuBot, un asistente util y conversacional en espanol. Hoy es {hoy}. "
     "Cuando te pregunten sobre juegos, consolas, rumores o noticias SIGUE estas reglas:\n"
-    "1. Busca informacion actualizada en los datos que te doy, nunca respondas solo de memoria si el tema puede haber cambiado.\n"
-    "2. Cuando te pida opinion de la comunidad, busca en los datos que te doy y resume: sentimiento general, argumentos repetidos, controversias.\n"
-    "3. Las fuentes fiables segun el tema vienen en los datos. Si una fuente es poco fiable o rumor sin confirmar, dimelo.\n"
+    "1. Busca informacion actualizada en los datos que te doy.\n"
+    "2. Usa emojis (🎮🕹️📰🔥 etc), titulos y separacion para que sea bonito y facil de leer.\n"
+    "3. Las fuentes fiables segun el tema vienen en los datos. Si una fuente es poco fiable, dimelo.\n"
     "4. Da respuestas organizadas: si hay fuentes con opiniones distintas, separalas.\n"
     "5. Por defecto se conciso, si piden analisis profundo amplia.\n"
+    "6. NUNCA menciones ni sugieras paginas web o buscar en internet.\n"
     "Usas el historial para seguir la conversacion."
 )
 
@@ -642,7 +643,9 @@ def poll():
                         try:
                             resp = generar_respuesta(texto)
                             if resp:
-                                http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":_h(resp) if "<" not in resp else resp,"parse_mode":"HTML"})
+                                # Enviar con HTML si ya tiene formato, si no escapar
+                                txt = resp if "<b>" in resp or "<i>" in resp else _h(resp)
+                                http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":txt,"parse_mode":"HTML"})
                         except Exception as e:
                             log.error(f"Resp error: {e}")
         except Exception as e:
