@@ -535,30 +535,50 @@ def generar_respuesta(mensaje):
             if imp: return "Importantes:\n"+("\n".join(imp))
             return "No hay correos importantes nuevos."
 
+        # --- Detectar fecha ---
+        filtro_fecha = ""
+        meses = {"enero":"01","febrero":"02","marzo":"03","abril":"04","mayo":"05","junio":"06",
+                 "julio":"07","agosto":"08","septiembre":"09","octubre":"10","noviembre":"11","diciembre":"12"}
+        m_fecha = re.search(r'(?:del?|dia)\s+(\d{1,2})\s*(?:de\s+)?(\w+)?\s*(?:de\s+)?(\d{4})?', consulta, re.I)
+        if m_fecha:
+            dia, mes_str, anio = m_fecha.group(1), m_fecha.group(2), m_fecha.group(3)
+            mes = meses.get(mes_str.lower() if mes_str else "", "")
+            if mes:
+                if not anio: anio = datetime.now().strftime("%Y")
+                filtro_fecha = f"after:{anio}/{mes}/{int(dia)-1} before:{anio}/{mes}/{int(dia)+1}"
+                solo_no_leidos = False
+        if "ayer" in consulta:
+            ayer = datetime.now() - timedelta(days=1)
+            filtro_fecha = f"after:{ayer.strftime('%Y/%m/%d')} before:{(ayer+timedelta(days=1)).strftime('%Y/%m/%d')}"
+            solo_no_leidos = False
+        if "hoy" in consulta and not filtro_fecha:
+            hoy_dt = datetime.now()
+            filtro_fecha = f"after:{hoy_dt.strftime('%Y/%m/%d')} before:{(hoy_dt+timedelta(days=1)).strftime('%Y/%m/%d')}"
+            solo_no_leidos = False
+
         # --- Leer inbox (con filtro) ---
-        max_r = 1 if es_ultimo else 5
-        solo_no_leidos = not es_leidos
-        filtro = ""
-        # Si hay "/", todo lo que sigue es el termino de busqueda exacto
+        max_r = 10 if filtro_fecha else (1 if es_ultimo else 5)
+        filtro = filtro_fecha or ""
+        # Detectar filtro adicional (remitente, asunto, /termino)
         barra = re.search(r'/(.+?)(?:\s*$)', consulta)
         if barra:
             term = barra.group(1).strip()
-            filtro = term
+            filtro = f"{filtro} {term}" if filtro else term
             solo_no_leidos = False
-            max_r = 1 if es_ultimo else 5
         else:
+            m = re.search(r'(?:de|del)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
+            if m:
+                t = m.group(1).strip()
+                if t.lower() in consulta.lower() and "enero" not in t.lower() and "febrero" not in t.lower() and not any(m in t.lower() for m in meses):
+                    filtro_extra = f"from:{t}"
+                    filtro = f"{filtro} {filtro_extra}" if filtro else filtro_extra
             m = re.search(r'(?:sobre|acerca de)\s+(.+?)(?:\s*$)', consulta, re.I)
-            if m: filtro = m.group(1).strip()
-            if not filtro:
-                m = re.search(r'(?:de|del)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
-                if m:
-                    t = m.group(1).strip()
-                    if t.lower() in consulta.lower():
-                        filtro = f"from:{t}"
+            if m and not filtro_fecha:
+                filtro = m.group(1).strip()
             m = re.search(r'(?:asunto|tema)\s+(.+?)(?:\s*$)', consulta, re.I)
             if m and not filtro:
                 filtro = f"subject:{m.group(1).strip()}"
-        return _leer_inbox(max_r=max_r, filtro=filtro, solo_no_leidos=solo_no_leidos)
+        return _leer_inbox(max_r=max_r, filtro=filtro.strip(), solo_no_leidos=solo_no_leidos)
 
     # 3. Clima / Gaming / Normal
     baja = consulta.lower()
