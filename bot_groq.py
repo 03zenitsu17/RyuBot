@@ -526,7 +526,8 @@ def generar_respuesta(mensaje):
             return "No pude generar la respuesta."
 
         # --- Borrador nuevo ---
-        if any(p in consulta for p in ["nuevo borrador", "nuevo email", "crea borrador", "redacta borrador", "crear borrador", "redactar borrador", "prepara borrador"]):
+        es_crear = re.search(r'(?:haz|hazme|crea|crear|redacta|redactar|prepara|preparar|nuevo|nueva|quiero|necesito)\s+(?:un\s+)?borrador', consulta, re.I)
+        if es_crear or "nuevo email" in consulta or "nuevo correo" in consulta:
             m_para = re.search(r'(?:para|a)\s+(.+?)(?:\s+con\s+asunto|\s+,\s*asunto|\s+asunto|\s*$)', consulta, re.I)
             m_asunto = re.search(r'(?:asunto|tema)[:\s]+(.+?)(?:\s+diciendo|\s+que\s+diga|\s+con\s+(?:mensaje|cuerpo)|$)', consulta, re.I)
             m_cuerpo = re.search(r'(?:diciendo|que\s+diga|con\s+(?:mensaje|cuerpo(?!\s+de))|mensaje:|cuerpo:|contenido:)[:\s]+(.+?)(?:\s*$)', consulta, re.I)
