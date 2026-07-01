@@ -526,8 +526,17 @@ def generar_respuesta(mensaje):
             return "No pude generar la respuesta."
 
         # --- Borrador nuevo ---
-        if "nuevo borrador" in consulta or "nuevo email" in consulta:
-            return "Dime: para quien, asunto y mensaje."
+        if any(p in consulta for p in ["nuevo borrador", "nuevo email", "crea borrador", "redacta borrador", "crear borrador", "redactar borrador", "prepara borrador"]):
+            m_para = re.search(r'(?:para|a)\s+(.+?)(?:\s+con\s+asunto|\s+,\s*asunto|\s+asunto|\s*$)', consulta, re.I)
+            m_asunto = re.search(r'(?:asunto|tema)[:\s]+(.+?)(?:\s+diciendo|\s+que\s+diga|\s+con\s+(?:mensaje|cuerpo)|$)', consulta, re.I)
+            m_cuerpo = re.search(r'(?:diciendo|que\s+diga|con\s+(?:mensaje|cuerpo(?!\s+de))|mensaje:|cuerpo:|contenido:)[:\s]+(.+?)(?:\s*$)', consulta, re.I)
+            para = m_para.group(1).strip() if m_para else None
+            asunto = m_asunto.group(1).strip() if m_asunto else None
+            cuerpo = m_cuerpo.group(1).strip() if m_cuerpo else None
+            if not para: return "✏️ Dime: para quien, asunto y mensaje.\nEj: <code>nuevo borrador para correo@example.com con asunto Reunion diciendo Hola que tal</code>"
+            if not asunto: return f"✏️ Cual es el asunto del borrador para {para}?"
+            if not cuerpo: return f"✏️ Que mensaje va en el borrador con asunto '{asunto}'?"
+            return _crear_borrador_nuevo(para, asunto, cuerpo)
 
         # --- Importantes ---
         if "importante" in consulta:
