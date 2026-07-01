@@ -1,5 +1,5 @@
 """Bot IA (Groq Llama 3) con busqueda, recordatorios y Gmail"""
-import sys, os, time, logging, re, json, urllib.parse, threading, base64
+import sys, os, time, logging, re, json, urllib.parse, threading, base64, sqlite3
 from datetime import datetime, timedelta
 import httpx
 
@@ -52,6 +52,21 @@ def _h(text):
     """Escapa HTML"""
     return text.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
 
+def _clasificar_email(asunto, remitente):
+    """Clasifica un email como urgente/normal/spam segun asunto y remitente"""
+    a = asunto.lower()
+    r = remitente.lower()
+    urgente = ["urgente","importante","vencimiento","deadline","factura","pago","recordatorio","aviso legal","notificacion judicial","citación","cita previa","sepe","labora","hacienda","aeat","contrato","firma"]
+    spam = ["newsletter","no-reply","noreply","no reply","notificacion","notificación","publicidad","oferta","descuento","promocion","marketing","info@","@mailing","@emails","@send"]
+    info = ["informacion","información","confirmacion","confirmación","recibo","ticket","pedido","envío","envio","factura electronica"]
+    if any(w in a for w in urgente) or any(w in r for w in ["urgente","importante","banco","bbva","santander","caixa","ing"]):
+        return "🔴"
+    if any(w in a for w in spam):
+        return "⚪"
+    if any(w in a for w in info):
+        return "🟡"
+    return "🟡"
+
 def _leer_inbox(max_r=20, filtro="", solo_no_leidos=True, solo_ultimo=False):
     svc = _init_gmail()
     if not svc: return "Gmail no conectado."
@@ -74,8 +89,9 @@ def _leer_inbox(max_r=20, filtro="", solo_no_leidos=True, solo_ultimo=False):
             _de = _h(hd.get("From","?"))
             _asunto = _h(hd.get("Subject","?"))
             _fecha = _h(hd.get("Date","?"))
+            _emoji = _clasificar_email(hd.get("Subject",""), hd.get("From",""))
             _ultima_lista_emails.append((m["id"], hd.get("From","?"), hd.get("Subject","?")))
-            res.append(f"<b>{i}.</b> <b>De:</b> {_de}\n    <b>Asunto:</b> {_asunto}\n    <i>{_fecha}</i>")
+            res.append(f"{_emoji} <b>{i}.</b> <b>De:</b> {_de}\n    <b>Asunto:</b> {_asunto}\n    <i>{_fecha}</i>")
         titulo = f"<b>📬 Emails {'con ' + _h(filtro) if filtro else ''}:</b>"
         return titulo + "\n" + "\n─────────────\n".join(res[:max_r])
     except Exception as e:
@@ -348,13 +364,37 @@ def _procesar_json_recordatorio(texto):
     elif accion == "pedir_aclaracion": return f"❓ {j.get('pregunta', 'Necesito mas detalles.')}"
     return None
 
-# --- Memoria ---
+# --- Memoria persistente (SQLite) ---
+_DB = "conversaciones.db"
 historial = []
 _pendiente_borrador = None  # {"tipo":"respuesta"|"nuevo","eid":...,"generado":...,"para":...,"asunto":...,"cuerpo":...}
+
+def _init_db():
+    conn = sqlite3.connect(_DB)
+    conn.execute("CREATE TABLE IF NOT EXISTS conversaciones (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, msg TEXT, resp TEXT, topico TEXT)")
+    conn.commit()
+    conn.close()
+
+def _cargar_historial():
+    global historial
+    conn = sqlite3.connect(_DB)
+    rows = conn.execute("SELECT ts, msg, resp, topico FROM conversaciones ORDER BY id DESC LIMIT 12").fetchall()
+    conn.close()
+    historial = [{"msg": r[1], "resp": r[2], "topico": r[3], "ts": float(r[0])} for r in reversed(rows)]
 
 def recordar(mensaje, respuesta, topico=None):
     historial.append({"msg": mensaje, "resp": respuesta, "topico": topico, "ts": time.time()})
     while len(historial) > 12: historial.pop(0)
+    try:
+        conn = sqlite3.connect(_DB)
+        conn.execute("INSERT INTO conversaciones (ts, msg, resp, topico) VALUES (?, ?, ?, ?)",
+                     (str(time.time()), mensaje, respuesta[:500], topico or ""))
+        conn.commit()
+        conn.close()
+    except: pass
+
+_init_db()
+_cargar_historial()
 
 PALABRAS_CLIMA = ["tiempo","clima","temperatura","lluvia","calor","frio","soleado","nublado","paraguas","humedad","viento"]
 PALABRAS_GAMING = ["juego","jugar","videojuego","consola","nintendo","playstation","xbox","steam","switch","ps5","ps4","gta","pokemon","zelda","rumor","filtracion","lanzamiento","review","analisis","fps","metacritic","ventas","ign","eurogamer"]
@@ -412,7 +452,7 @@ def _extraer_ciudad(texto):
     m = re.search(r'(?:en|de|para)\s+(\w+(?:\s+\w+)?)',texto,re.I)
     return m.group(1).strip().lower() if m else ""
 
-def _buscar_gaming(query):
+def _buscar_web(query):
     r = _ddg_html(query)
     if r: return r
     r = _ddg_html(f"{query} 2026")
@@ -434,7 +474,7 @@ def generar_respuesta(mensaje):
     # Confirmar/rechazar borrador pendiente (antes de reformular)
     if _pendiente_borrador:
         baja = mensaje.lower().strip()
-        if len(baja.split()) <= 3 and any(w in baja for w in ["si", "sí", "ok", "vale", "dale", "yes", "confirmo", "confirma", "adelante", "claro", "hazlo", "crealo"]):
+        if any(w in baja for w in ["si", "sí", "ok", "vale", "dale", "yes", "confirmo", "confirma", "adelante", "claro", "hazlo", "crealo"]):
             pend = _pendiente_borrador
             _pendiente_borrador = None
             if pend["tipo"] == "respuesta":
@@ -444,9 +484,29 @@ def generar_respuesta(mensaje):
             if pend.get("mostrado"):
                 return f"{resultado}\n\n{pend['mostrado'][:500]}"
             return resultado
-        elif len(baja.split()) <= 3 and any(w in baja for w in ["no", "nope", "cancel", "cancela", "quita", "para", "nada"]):
+        if any(w in baja for w in ["no", "nope", "cancel", "cancela", "quita", "para", "nada"]):
             _pendiente_borrador = None
             return "Cancelado."
+        # Revisar borrador segun feedback del usuario
+        pend = _pendiente_borrador
+        feedback = mensaje
+        cuerpo_orig = ""
+        if pend["tipo"] == "respuesta" and pend.get("eid"):
+            cuerpo_orig = _leer_cuerpo(pend["eid"])
+            if cuerpo_orig.startswith("Gmail no") or cuerpo_orig.startswith("Error"):
+                cuerpo_orig = ""
+        msgs = [
+            {"role": "system", "content": "Eres RyuBot, asistente que redacta correos. Responde SOLO con el texto del email revisado, sin explicaciones."},
+            {"role": "user", "content": f"Email original:\n{cuerpo_orig or '(nuevo)'}\n\nBorrador actual:\n{pend['generado']}\n\nEl usuario pide: '{feedback}'\n\nRevisa el borrador segun su peticion."}
+        ]
+        try:
+            nuevo = ia_chat(msgs)
+            if nuevo:
+                _pendiente_borrador["generado"] = nuevo
+                _pendiente_borrador["mostrado"] = nuevo
+                return f"✏️ Version revisada:\n\n{nuevo[:1000]}\n\n¿La confirmo? (sí/no)"
+        except: pass
+        return "No pude revisarlo. Di sí para crear o no para cancelar."
 
     hoy = datetime.now().strftime("%d/%m/%Y")
     consulta = _reformular_consulta(mensaje)
@@ -651,9 +711,11 @@ def generar_respuesta(mensaje):
         ciudad = _extraer_ciudad(consulta) or "Madrid"
         ctx = _clima(ciudad)
         sys_p = SYS_CLIMA.format(hoy=hoy)
-    elif es_gaming:
-        ctx = _buscar_gaming(consulta)
-        sys_p = SYS_GAMING.format(hoy=hoy)
+    else:
+        # Web search para TEMA consulta (no solo gaming)
+        ctx = _buscar_web(consulta)
+        if es_gaming:
+            sys_p = SYS_GAMING.format(hoy=hoy)
 
     msgs = [{"role":"system","content":sys_p}]
     for h in historial[-4:]:
