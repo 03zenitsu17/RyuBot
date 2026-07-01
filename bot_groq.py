@@ -489,7 +489,14 @@ def generar_respuesta(mensaje):
             return _leer_inbox()
 
         # --- Responder (borrador respuesta) ---
-        if "responde" in consulta or "responder" in consulta:
+        es_responder = (
+            "responde" in consulta or "responder" in consulta or
+            "contesta" in consulta or "contestale" in consulta or
+            "respondele" in consulta or
+            ("revisa" in consulta and "borrador" in consulta) or
+            ("prepara" in consulta and ("respuesta" in consulta or "borrador" in consulta))
+        )
+        if es_responder:
             eid, texto_resp, user_instruction = None, "", ""
             m_num = re.search(r'(?:al|el)\s*(\d+)', consulta)
             if m_num: eid = _email_por_numero(int(m_num.group(1)))
@@ -534,6 +541,26 @@ def generar_respuesta(mensaje):
             para = m_para.group(1).strip() if m_para else None
             asunto = m_asunto.group(1).strip() if m_asunto else None
             cuerpo = m_cuerpo.group(1).strip() if m_cuerpo else None
+            # Si no dio para/asunto/cuerpo pero menciona un numero de email, redirigir a responder IA
+            if not para and not asunto and not cuerpo:
+                m_num = re.search(r'(?:el|al|del|n[uú]mero)\s*(\d+)', consulta)
+                if m_num:
+                    eid = _email_por_numero(int(m_num.group(1)))
+                    if eid:
+                        cuerpo = _leer_cuerpo(eid)
+                        if cuerpo.startswith("Gmail no") or cuerpo.startswith("Error"):
+                            return f"No pude leer el correo: {cuerpo}"
+                        msgs = [
+                            {"role": "system", "content": f"Eres RyuBot, asistente que redacta respuestas de email en español. Hoy es {hoy}. Responde SOLO con el texto del email, sin explicaciones."},
+                            {"role": "user", "content": f"Correo:\n{cuerpo}\n\nRedacta una respuesta profesional y adecuada."}
+                        ]
+                        try:
+                            generado = ia_chat(msgs)
+                            if generado:
+                                resultado = _crear_borrador_respuesta(eid, generado)
+                                return f"{resultado}\n\n{generado[:500]}"
+                        except: pass
+                        return "No pude generar la respuesta."
             if not para: return "✏️ Dime: para quien, asunto y mensaje.\nEj: <code>nuevo borrador para correo@example.com con asunto Reunion diciendo Hola que tal</code>"
             if not asunto: return f"✏️ Cual es el asunto del borrador para {para}?"
             if not cuerpo: return f"✏️ Que mensaje va en el borrador con asunto '{asunto}'?"
