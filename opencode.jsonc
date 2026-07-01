@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "agente-personal": {
+      "description": "Tu agente personal con conexion al movil via Telegram, noticias reales multi-fuente, IA local, y generacion de imagenes.",
+      "mode": "subagent"
+    }
+  },
+  "mcp": {
+    "telegram": {
+      "type": "local",
+      "command": ["python", "servers/telegram_mcp.py"],
+      "enabled": true,
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "8860896177:AAH8KVwId2oGPWnqzLMHz-ay0BaXu1jbjiY"
+      }
+    }
+  }
+}

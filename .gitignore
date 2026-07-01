@@ -3,3 +3,5 @@ __pycache__/
 .env
 recordatorios.json
 .pendiente_aviso
+token.json
+client_secret.json

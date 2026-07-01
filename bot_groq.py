@@ -567,7 +567,7 @@ def generar_respuesta(mensaje):
             filtro = f"{filtro} {term}" if filtro else term
             solo_no_leidos = False
         else:
-            m = re.search(r'(?:de|del)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
+            m = re.search(r'(?:de|del)\s+(.+?)(?:\s+y\s+|\s*$)', consulta, re.I)
             if m:
                 t = m.group(1).strip().lower()
                 if t not in palabras_fecha and "enero" not in t and not any(mm in t for mm in meses):
