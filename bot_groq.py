@@ -350,6 +350,7 @@ def _procesar_json_recordatorio(texto):
 
 # --- Memoria ---
 historial = []
+_pendiente_borrador = None  # {"tipo":"respuesta"|"nuevo","eid":...,"generado":...,"para":...,"asunto":...,"cuerpo":...}
 
 def recordar(mensaje, respuesta, topico=None):
     historial.append({"msg": mensaje, "resp": respuesta, "topico": topico, "ts": time.time()})
@@ -429,6 +430,24 @@ def _es_gmail(texto):
     return any(w in baja for w in PALABRAS_GMAIL)
 
 def generar_respuesta(mensaje):
+    global _pendiente_borrador
+    # Confirmar/rechazar borrador pendiente (antes de reformular)
+    if _pendiente_borrador:
+        baja = mensaje.lower().strip()
+        if len(baja.split()) <= 3 and any(w in baja for w in ["si", "sí", "ok", "vale", "dale", "yes", "confirmo", "confirma", "adelante", "claro", "hazlo", "crealo"]):
+            pend = _pendiente_borrador
+            _pendiente_borrador = None
+            if pend["tipo"] == "respuesta":
+                resultado = _crear_borrador_respuesta(pend["eid"], pend["generado"])
+            else:
+                resultado = _crear_borrador_nuevo(pend["para"], pend["asunto"], pend["cuerpo"])
+            if pend.get("mostrado"):
+                return f"{resultado}\n\n{pend['mostrado'][:500]}"
+            return resultado
+        elif len(baja.split()) <= 3 and any(w in baja for w in ["no", "nope", "cancel", "cancela", "quita", "para", "nada"]):
+            _pendiente_borrador = None
+            return "Cancelado."
+
     hoy = datetime.now().strftime("%d/%m/%Y")
     consulta = _reformular_consulta(mensaje)
 
@@ -511,7 +530,8 @@ def generar_respuesta(mensaje):
             if not eid: return "A que email quieres responder?"
 
             if texto_resp:
-                return _crear_borrador_respuesta(eid, texto_resp)
+                _pendiente_borrador = {"tipo":"respuesta","eid":eid,"generado":texto_resp,"mostrado":texto_resp}
+                return f"✏️ Voy a responder con:\n\n{texto_resp[:500]}\n\n¿Confirmo? (sí/no)"
 
             # Si no dijo el texto exacto, leemos el correo y la IA genera respuesta
             cuerpo = _leer_cuerpo(eid)
@@ -527,8 +547,8 @@ def generar_respuesta(mensaje):
             try:
                 generado = ia_chat(msgs)
                 if generado:
-                    resultado = _crear_borrador_respuesta(eid, generado)
-                    return f"{resultado}\n\n{generado[:500]}"
+                    _pendiente_borrador = {"tipo":"respuesta","eid":eid,"generado":generado,"mostrado":generado}
+                    return f"✏️ Esta es la respuesta que he preparado:\n\n{generado[:1000]}\n\n¿La confirmo? (sí/no)"
             except: pass
             return "No pude generar la respuesta."
 
@@ -557,14 +577,16 @@ def generar_respuesta(mensaje):
                         try:
                             generado = ia_chat(msgs)
                             if generado:
-                                resultado = _crear_borrador_respuesta(eid, generado)
-                                return f"{resultado}\n\n{generado[:500]}"
+                                _pendiente_borrador = {"tipo":"respuesta","eid":eid,"generado":generado,"mostrado":generado}
+                                return f"✏️ Esta es la respuesta que he preparado:\n\n{generado[:1000]}\n\n¿La confirmo? (sí/no)"
                         except: pass
                         return "No pude generar la respuesta."
             if not para: return "✏️ Dime: para quien, asunto y mensaje.\nEj: <code>nuevo borrador para correo@example.com con asunto Reunion diciendo Hola que tal</code>"
             if not asunto: return f"✏️ Cual es el asunto del borrador para {para}?"
             if not cuerpo: return f"✏️ Que mensaje va en el borrador con asunto '{asunto}'?"
-            return _crear_borrador_nuevo(para, asunto, cuerpo)
+            preview = f"<b>Para:</b> {para}\n<b>Asunto:</b> {asunto}\n<b>Mensaje:</b>\n{cuerpo[:500]}"
+            _pendiente_borrador = {"tipo":"nuevo","para":para,"asunto":asunto,"cuerpo":cuerpo,"mostrado":preview}
+            return f"✏️ Borrador a crear:\n\n{preview}\n\n¿Lo confirmo? (sí/no)"
 
         # --- Importantes ---
         if "importante" in consulta:
