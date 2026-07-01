@@ -1,5 +1,5 @@
 """Bot IA (Groq Llama 3) con busqueda, recordatorios y Gmail"""
-import sys, os, time, logging, re, json, urllib.parse, threading, base64, sqlite3
+import sys, os, time, logging, re, json, urllib.parse, threading, base64, sqlite3, tempfile
 from datetime import datetime, timedelta
 import httpx
 
@@ -121,8 +121,29 @@ def _leer_cuerpo(email_id):
     except Exception as e:
         return f"<b>Error:</b> {_h(str(e))}"
 
-def _crear_borrador_respuesta(email_id, cuerpo_respuesta):
-    """Crea borrador de respuesta a un email existente"""
+def _crear_mime_msg(to, subject, body, attachments=None, in_reply_to=None, references=None):
+    """Crea mensaje MIME. attachments = [(path, filename), ...]"""
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+    msg = MIMEMultipart()
+    msg["To"] = to
+    msg["Subject"] = subject
+    if in_reply_to: msg["In-Reply-To"] = in_reply_to
+    if references: msg["References"] = references
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+    if attachments:
+        for path, filename in attachments:
+            with open(path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+                msg.attach(part)
+    return msg
+
+def _crear_borrador_respuesta(email_id, cuerpo_respuesta, adjuntos=None):
     svc = _init_gmail()
     if not svc: return "Gmail no conectado."
     try:
@@ -133,27 +154,27 @@ def _crear_borrador_respuesta(email_id, cuerpo_respuesta):
         if not asunto.startswith("Re: "): asunto = f"Re: {asunto}"
         msg_id = h.get("Message-ID", "")
         refs = h.get("References", "") or msg_id
-        msg = (
-            f"From: me\r\nTo: {para}\r\nSubject: {asunto}\r\n"
-            f"In-Reply-To: {msg_id}\r\nReferences: {refs}\r\n"
-            f"MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{cuerpo_respuesta}"
-        )
-        raw = base64.urlsafe_b64encode(msg.encode("utf-8")).decode()
+        msg = _crear_mime_msg(para, asunto, cuerpo_respuesta, attachments=adjuntos, in_reply_to=msg_id, references=refs)
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         draft = svc.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
-        return f"✅ Borrador respuesta creado para:\n<b>Asunto:</b> {_h(h.get('Subject','?'))}"
+        rta = f"✅ Borrador respuesta creado para:\n<b>Asunto:</b> {_h(h.get('Subject','?'))}"
+        if adjuntos: rta += f"\n📎 {len(adjuntos)} archivo(s) adjunto(s)"
+        return rta
     except Exception as e:
         return f"<b>Error:</b> {_h(str(e))}"
 
-def _crear_borrador_nuevo(para, asunto, cuerpo):
+def _crear_borrador_nuevo(para, asunto, cuerpo, adjuntos=None):
     svc = _init_gmail()
     if not svc: return "Gmail no conectado."
     try:
-        msg = (f"From: me\r\nTo: {para}\r\nSubject: {asunto}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{cuerpo}")
-        raw = base64.urlsafe_b64encode(msg.encode("utf-8")).decode()
+        msg = _crear_mime_msg(para, asunto, cuerpo, attachments=adjuntos)
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         draft = svc.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
-        return f"Borrador creado: '{asunto}' para {para}"
+        rta = f"✅ Borrador creado: '{asunto}' para {para}"
+        if adjuntos: rta += f"\n📎 {len(adjuntos)} archivo(s) adjunto(s)"
+        return rta
     except Exception as e:
-        return f"Error: {e}"
+        return f"<b>Error:</b> {str(e)}"
 
 def _listar_borradores():
     svc = _init_gmail()
@@ -301,6 +322,54 @@ def _clima(ciudad):
             return r.text.strip()
     except: pass
     return ""
+
+# --- Procesar archivos (imagenes, PDFs) ---
+_pendiente_archivo = None  # {"path":...,"filename":...,"mime":...,"descripcion":...}
+
+def _telegram_download(file_id):
+    """Descarga un archivo de Telegram y devuelve la ruta local"""
+    try:
+        r = http.get(f"{API}/getFile", params={"file_id": file_id})
+        data = r.json()
+        if data.get("ok"):
+            fp = data["result"]["file_path"]
+            ext = os.path.splitext(fp)[1] or ".bin"
+            local = os.path.join(tempfile.gettempdir(), f"ryubot_{int(time.time())}{ext}")
+            r2 = http.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fp}")
+            if r2.status_code == 200:
+                with open(local, "wb") as f: f.write(r2.content)
+                return local
+    except: pass
+    return None
+
+def _procesar_imagen(path):
+    """Analiza una imagen con Groq vision y devuelve descripcion"""
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
+        r = http.post("https://api.groq.com/openai/v1/chat/completions", json={
+            "model": "llama-3.2-90b-vision-preview",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Describe esta imagen en detalle. Si tiene texto, transcribelo exactamente."},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+            ]}],
+            "max_tokens": 1024,
+        }, headers={"Authorization": f"Bearer {AI_KEY}", "Content-Type": "application/json"}, timeout=30)
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except: return None
+
+def _procesar_pdf(path):
+    """Extrae texto de un PDF"""
+    try:
+        import fitz
+        doc = fitz.open(path)
+        texto = "\n".join(page.get_text() for page in doc)
+        doc.close()
+        if len(texto) > 3000:
+            texto = texto[:3000] + "\n[truncado]"
+        return texto.strip() or "[PDF sin texto extraible]"
+    except: return None
 
 # --- Recordatorios ---
 CAL_PATH = "recordatorios.json"
@@ -469,22 +538,40 @@ def _es_gmail(texto):
     baja = texto.lower()
     return any(w in baja for w in PALABRAS_GMAIL)
 
+def _adjuntos_pendientes():
+    """Devuelve [(path, filename)] si hay archivo pendiente"""
+    global _pendiente_archivo
+    if _pendiente_archivo and os.path.exists(_pendiente_archivo["path"]):
+        return [(_pendiente_archivo["path"], _pendiente_archivo["filename"])]
+    return None
+
+def _mostrar_adjuntos_pend():
+    global _pendiente_archivo
+    if _pendiente_archivo:
+        return f"\n📎 Archivo pendiente: {_pendiente_archivo['filename']}"
+    return ""
+
 def generar_respuesta(mensaje):
-    global _pendiente_borrador
+    global _pendiente_borrador, _pendiente_archivo
     # Confirmar/rechazar borrador pendiente (antes de reformular)
     if _pendiente_borrador:
         baja = mensaje.lower().strip()
-        if any(w in baja for w in ["si", "sí", "ok", "vale", "dale", "yes", "confirmo", "confirma", "adelante", "claro", "hazlo", "crealo"]):
+        # Comprobar si el mensaje es un feedback de revision, no confirmacion
+        es_confirmacion = any(w in baja for w in ["si", "sí", "ok", "vale", "dale", "yes", "confirmo", "confirma", "adelante", "claro", "hazlo", "crealo"])
+        es_cancelacion = any(w in baja for w in ["no", "nope", "cancel", "cancela", "quita", "para", "nada"])
+        if es_confirmacion:
             pend = _pendiente_borrador
             _pendiente_borrador = None
+            adj = _adjuntos_pendientes()
             if pend["tipo"] == "respuesta":
-                resultado = _crear_borrador_respuesta(pend["eid"], pend["generado"])
+                resultado = _crear_borrador_respuesta(pend["eid"], pend["generado"], adjuntos=adj)
             else:
-                resultado = _crear_borrador_nuevo(pend["para"], pend["asunto"], pend["cuerpo"])
+                resultado = _crear_borrador_nuevo(pend["para"], pend["asunto"], pend["cuerpo"], adjuntos=adj)
+            if adj: _pendiente_archivo = None
             if pend.get("mostrado"):
                 return f"{resultado}\n\n{pend['mostrado'][:500]}"
             return resultado
-        if any(w in baja for w in ["no", "nope", "cancel", "cancela", "quita", "para", "nada"]):
+        if es_cancelacion:
             _pendiente_borrador = None
             return "Cancelado."
         # Revisar borrador segun feedback del usuario
@@ -503,8 +590,8 @@ def generar_respuesta(mensaje):
             nuevo = ia_chat(msgs)
             if nuevo:
                 _pendiente_borrador["generado"] = nuevo
-                _pendiente_borrador["mostrado"] = nuevo
-                return f"✏️ Version revisada:\n\n{nuevo[:1000]}\n\n¿La confirmo? (sí/no)"
+                _pendiente_borrador["mostrado"] = nuevo + _mostrar_adjuntos_pend()
+                return f"✏️ Version revisada:\n\n{nuevo[:1000]}\n{_mostrar_adjuntos_pend()}\n\n¿La confirmo? (sí/no)"
         except: pass
         return "No pude revisarlo. Di sí para crear o no para cancelar."
 
@@ -591,7 +678,7 @@ def generar_respuesta(mensaje):
 
             if texto_resp:
                 _pendiente_borrador = {"tipo":"respuesta","eid":eid,"generado":texto_resp,"mostrado":texto_resp}
-                return f"✏️ Voy a responder con:\n\n{texto_resp[:500]}\n\n¿Confirmo? (sí/no)"
+                return f"✏️ Voy a responder con:\n\n{texto_resp[:500]}{_mostrar_adjuntos_pend()}\n\n¿Confirmo? (sí/no)"
 
             # Si no dijo el texto exacto, leemos el correo y la IA genera respuesta
             cuerpo = _leer_cuerpo(eid)
@@ -608,7 +695,7 @@ def generar_respuesta(mensaje):
                 generado = ia_chat(msgs)
                 if generado:
                     _pendiente_borrador = {"tipo":"respuesta","eid":eid,"generado":generado,"mostrado":generado}
-                    return f"✏️ Esta es la respuesta que he preparado:\n\n{generado[:1000]}\n\n¿La confirmo? (sí/no)"
+                    return f"✏️ Esta es la respuesta que he preparado:\n\n{generado[:1000]}{_mostrar_adjuntos_pend()}\n\n¿La confirmo? (sí/no)"
             except: pass
             return "No pude generar la respuesta."
 
@@ -638,7 +725,7 @@ def generar_respuesta(mensaje):
                             generado = ia_chat(msgs)
                             if generado:
                                 _pendiente_borrador = {"tipo":"respuesta","eid":eid,"generado":generado,"mostrado":generado}
-                                return f"✏️ Esta es la respuesta que he preparado:\n\n{generado[:1000]}\n\n¿La confirmo? (sí/no)"
+                                return f"✏️ Esta es la respuesta que he preparado:\n\n{generado[:1000]}{_mostrar_adjuntos_pend()}\n\n¿La confirmo? (sí/no)"
                         except: pass
                         return "No pude generar la respuesta."
             if not para: return "✏️ Dime: para quien, asunto y mensaje.\nEj: <code>nuevo borrador para correo@example.com con asunto Reunion diciendo Hola que tal</code>"
@@ -646,7 +733,7 @@ def generar_respuesta(mensaje):
             if not cuerpo: return f"✏️ Que mensaje va en el borrador con asunto '{asunto}'?"
             preview = f"<b>Para:</b> {para}\n<b>Asunto:</b> {asunto}\n<b>Mensaje:</b>\n{cuerpo[:500]}"
             _pendiente_borrador = {"tipo":"nuevo","para":para,"asunto":asunto,"cuerpo":cuerpo,"mostrado":preview}
-            return f"✏️ Borrador a crear:\n\n{preview}\n\n¿Lo confirmo? (sí/no)"
+            return f"✏️ Borrador a crear:\n\n{preview}{_mostrar_adjuntos_pend()}\n\n¿Lo confirmo? (sí/no)"
 
         # --- Importantes ---
         if "importante" in consulta:
@@ -765,6 +852,54 @@ def _revisar_gmail():
         time.sleep(300)
 threading.Thread(target=_revisar_gmail,daemon=True).start()
 
+def _enviar(texto):
+    """Envia mensaje a Telegram"""
+    texto = texto.replace("**", "")
+    texto = re.sub(r'\n(\d+[\.\)])', r'\n\n\1', texto)
+    texto = texto.replace("\n\n\n", "\n\n")
+    txt = texto if "<b>" in texto or "<i>" in texto else _h(texto)
+    http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":txt,"parse_mode":"HTML"})
+
+def _procesar_archivo_recibido(msg):
+    """Procesa imagen o PDF recibido. Devuelve True si lo manejo"""
+    global _pendiente_archivo
+    file_id, mime, filename = None, "", "archivo"
+    # Foto
+    if "photo" in msg:
+        foto = msg["photo"][-1]  # mayor resolucion
+        file_id = foto["file_id"]
+        mime = "image/jpeg"
+        filename = f"foto_{int(time.time())}.jpg"
+    # Documento
+    elif "document" in msg:
+        doc = msg["document"]
+        file_id = doc["file_id"]
+        mime = doc.get("mime_type", "application/octet-stream")
+        filename = doc.get("file_name", f"doc_{int(time.time())}")
+    else:
+        return False
+    path = _telegram_download(file_id)
+    if not path:
+        _enviar("No pude descargar el archivo.")
+        return True
+    desc = None
+    if mime.startswith("image/"):
+        desc = _procesar_imagen(path)
+        tipo = "imagen"
+    elif mime == "application/pdf":
+        desc = _procesar_pdf(path)
+        tipo = "PDF"
+    else:
+        _enviar(f"Archivo recibido: {filename} (tipo no soportado)")
+        os.remove(path)
+        return True
+    _pendiente_archivo = {"path": path, "filename": filename, "mime": mime, "descripcion": desc}
+    if desc:
+        _enviar(f"📄 {tipo.upper()} recibida: {filename}\n\n{desc[:1000]}\n\n💡 Puedes decir: <i>crea un borrador adjuntando esto</i> o <i>crea un borrador para X asunto Y</i>")
+    else:
+        _enviar(f"📄 {tipo.upper()} recibida: {filename} (no pude extraer contenido)")
+    return True
+
 # --- Polling ---
 def poll():
     global last_update
@@ -777,19 +912,19 @@ def poll():
                 for upd in data["result"]:
                     last_update = upd["update_id"]
                     msg = upd.get("message") or upd.get("edited_message")
-                    if msg and msg.get("text") and msg["chat"]["id"] == CHAT_ID:
+                    if not msg or msg["chat"]["id"] != CHAT_ID: continue
+                    # Archivos (imagenes, PDFs)
+                    if "photo" in msg or "document" in msg:
+                        _procesar_archivo_recibido(msg)
+                        continue
+                    # Texto
+                    if msg.get("text"):
                         texto = msg["text"].strip()
                         if texto.startswith("/"): continue
                         log.info(f"\u2192 {texto[:60]}")
                         try:
                             resp = generar_respuesta(texto)
-                            if resp:
-                                # Limpiar ** y separar listas
-                                resp = resp.replace("**", "")
-                                resp = re.sub(r'\n(\d+[\.\)])', r'\n\n\1', resp)
-                                resp = resp.replace("\n\n\n", "\n\n")
-                                txt = resp if "<b>" in resp or "<i>" in resp else _h(resp)
-                                http.post(f"{API}/sendMessage",json={"chat_id":CHAT_ID,"text":txt,"parse_mode":"HTML"})
+                            if resp: _enviar(resp)
                         except Exception as e:
                             log.error(f"Resp error: {e}")
         except Exception as e:
