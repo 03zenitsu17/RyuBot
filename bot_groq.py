@@ -52,13 +52,13 @@ def _h(text):
     """Escapa HTML"""
     return text.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
 
-def _leer_inbox(max_r=5, filtro="", solo_no_leidos=True, solo_ultimo=False):
+def _leer_inbox(max_r=20, filtro="", solo_no_leidos=True, solo_ultimo=False):
     svc = _init_gmail()
     if not svc: return "Gmail no conectado."
     try:
         labels = ["INBOX"]
         if solo_no_leidos: labels.append("UNREAD")
-        params = {"userId": "me", "labelIds": labels, "maxResults": max_r}
+        params = {"userId": "me", "labelIds": labels, "maxResults": min(max_r, 50)}
         if filtro: params["q"] = filtro
         r = svc.users().messages().list(**params).execute()
         msgs = r.get("messages", [])
@@ -557,7 +557,7 @@ def generar_respuesta(mensaje):
             solo_no_leidos = False
 
         # --- Leer inbox (con filtro) ---
-        max_r = 10 if filtro_fecha else (1 if es_ultimo else 5)
+        max_r = 20 if filtro_fecha else (1 if es_ultimo else 5)
         filtro = filtro_fecha or ""
         # Detectar filtro adicional (remitente, asunto, /termino)
         barra = re.search(r'/(.+?)(?:\s*$)', consulta)
