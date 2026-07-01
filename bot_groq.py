@@ -560,6 +560,7 @@ def generar_respuesta(mensaje):
         max_r = 20 if filtro_fecha else (1 if es_ultimo else 5)
         filtro = filtro_fecha or ""
         # Detectar filtro adicional (remitente, asunto, /termino)
+        palabras_fecha = {"hoy","ayer","mañana","pasado","semana","mes","año","dia","día"}
         barra = re.search(r'/(.+?)(?:\s*$)', consulta)
         if barra:
             term = barra.group(1).strip()
@@ -568,10 +569,11 @@ def generar_respuesta(mensaje):
         else:
             m = re.search(r'(?:de|del)\s+(.+?)(?:\s*y\s*|\s*$)', consulta, re.I)
             if m:
-                t = m.group(1).strip()
-                if t.lower() in consulta.lower() and "enero" not in t.lower() and "febrero" not in t.lower() and not any(m in t.lower() for m in meses):
-                    filtro_extra = f"from:{t}"
-                    filtro = f"{filtro} {filtro_extra}" if filtro else filtro_extra
+                t = m.group(1).strip().lower()
+                if t not in palabras_fecha and "enero" not in t and not any(mm in t for mm in meses):
+                    if t in consulta.lower():
+                        filtro_extra = f"from:{m.group(1).strip()}"
+                        filtro = f"{filtro} {filtro_extra}" if filtro else filtro_extra
             m = re.search(r'(?:sobre|acerca de)\s+(.+?)(?:\s*$)', consulta, re.I)
             if m and not filtro_fecha:
                 filtro = m.group(1).strip()
